@@ -2,205 +2,965 @@
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#2563EB">
+<meta name="description" content="Gastos, deudas y presupuestos personales. Offline, sin servidor.">
 <title>Finanzas</title>
-<style>
-  :root { --bg:#fafafa; --fg:#111; --muted:#666; --line:#e4e4e4; --accent:#2563eb; --danger:#dc2626; --ok:#16a34a; }
-  * { box-sizing: border-box; }
-  body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--fg); margin: 0; padding: 1rem; max-width: 48rem; margin-inline: auto; }
-  h1 { margin: 0 0 1rem; }
-  nav { display: flex; gap: .5rem; margin-bottom: 1rem; border-bottom: 1px solid var(--line); }
-  nav button { background: none; border: 0; padding: .6rem 1rem; cursor: pointer; font: inherit; color: var(--muted); border-bottom: 2px solid transparent; }
-  nav button.active { color: var(--fg); border-color: var(--accent); }
-  section { display: none; }
-  section.active { display: block; }
-  form { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: .5rem; margin-bottom: 1rem; }
-  input, select, button { font: inherit; padding: .5rem .6rem; border: 1px solid var(--line); border-radius: .4rem; background: white; }
-  form button { background: var(--accent); color: white; border-color: var(--accent); cursor: pointer; }
-  .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem,1fr)); gap: .5rem; margin-bottom: 1rem; }
-  .card { background: white; border: 1px solid var(--line); border-radius: .5rem; padding: .8rem 1rem; }
-  .card .label { color: var(--muted); font-size: .85rem; }
-  .card .value { font-size: 1.4rem; font-weight: 600; margin-top: .2rem; }
-  table { width: 100%; border-collapse: collapse; background: white; border: 1px solid var(--line); border-radius: .5rem; overflow: hidden; }
-  th, td { padding: .5rem .6rem; text-align: left; border-bottom: 1px solid var(--line); font-size: .9rem; }
-  th { background: #f4f4f4; font-weight: 600; }
-  tr:last-child td { border-bottom: 0; }
-  .row-actions button { padding: .2rem .5rem; font-size: .8rem; margin-left: .2rem; }
-  .del { color: var(--danger); border-color: var(--danger); background: white; cursor: pointer; }
-  .paid { color: var(--ok); }
-  .month { margin: 1rem 0 .3rem; font-weight: 600; color: var(--muted); }
-  .tools { display: flex; gap: .5rem; margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--line); }
-  .tools button { background: white; cursor: pointer; }
-  .empty { color: var(--muted); font-style: italic; padding: 1rem; text-align: center; }
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js" defer></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          ink: '#0F172A',
+          primary: '#2563EB',
+          surface: '#F8FAFC',
+        },
+        fontFamily: {
+          sans: ['Inter', 'system-ui', 'sans-serif'],
+        },
+      },
+    },
+  };
+</script>
+<style type="text/tailwindcss">
+  @layer base {
+    body { @apply font-sans bg-surface text-ink antialiased; }
+  }
+  @layer components {
+    .input {
+      @apply border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white
+             focus:outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary transition;
+    }
+    .btn-primary {
+      @apply inline-flex items-center justify-center gap-1.5 bg-primary text-white
+             rounded-lg px-4 py-2 text-sm font-medium hover:bg-blue-700
+             active:scale-[.98] transition disabled:opacity-50 disabled:cursor-not-allowed;
+    }
+    .btn-ghost {
+      @apply inline-flex items-center justify-center gap-1.5 bg-white border border-slate-200
+             text-slate-700 rounded-lg px-3 py-2 text-sm hover:bg-slate-50 active:scale-[.98] transition;
+    }
+    .btn-danger {
+      @apply inline-flex items-center justify-center gap-1.5 bg-red-600 text-white
+             rounded-lg px-4 py-2 text-sm font-medium hover:bg-red-700 active:scale-[.98]
+             transition disabled:opacity-50 disabled:cursor-not-allowed;
+    }
+    .card { @apply bg-white rounded-xl border border-slate-200 shadow-sm p-4; }
+    .tab { @apply shrink-0 px-3 py-3 text-sm border-b-2 border-transparent text-slate-500 hover:text-ink transition; }
+    .tab-active { @apply text-ink border-primary font-medium; }
+    .kpi-label { @apply text-[11px] text-slate-500 uppercase tracking-wide font-medium; }
+    .badge { @apply inline-block px-2 py-0.5 rounded text-[11px] font-medium; }
+  }
+  dialog::backdrop { background: rgba(15, 23, 42, .55); backdrop-filter: blur(2px); }
+  dialog[open] { animation: pop .15s ease-out; }
+  @keyframes pop { from { opacity: 0; transform: translateY(6px) scale(.98); } to { opacity: 1; transform: none; } }
 </style>
 </head>
 <body>
-<h1>Finanzas</h1>
 
-<div class="summary">
-  <div class="card"><div class="label">Gasto este mes</div><div class="value" id="s-month">₲ 0</div></div>
-  <div class="card"><div class="label">Deuda pendiente</div><div class="value" id="s-debt">₲ 0</div></div>
-  <div class="card"><div class="label">Gasto total</div><div class="value" id="s-total">₲ 0</div></div>
-</div>
+<header class="bg-white border-b border-slate-200 sticky top-0 z-20">
+  <div class="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
+    <div class="flex items-center gap-2.5">
+      <div class="w-9 h-9 rounded-lg bg-primary text-white flex items-center justify-center font-bold text-lg">₲</div>
+      <div>
+        <h1 class="text-base font-semibold leading-tight">Finanzas</h1>
+        <div class="text-[11px] text-slate-500 leading-tight" id="today"></div>
+      </div>
+    </div>
+    <div id="offline-badge" class="badge bg-amber-100 text-amber-700 hidden">Sin conexión</div>
+  </div>
+  <nav class="max-w-5xl mx-auto px-2 flex gap-1 overflow-x-auto">
+    <button data-tab="dashboard" class="tab">Dashboard</button>
+    <button data-tab="expenses" class="tab">Gastos</button>
+    <button data-tab="debts" class="tab">Deudas</button>
+    <button data-tab="budgets" class="tab">Presupuestos</button>
+    <button data-tab="backup" class="tab">Respaldo</button>
+  </nav>
+</header>
 
-<nav>
-  <button data-tab="expenses" class="active">Gastos</button>
-  <button data-tab="debts">Deudas</button>
-</nav>
+<main class="max-w-5xl mx-auto px-4 py-5 pb-16">
 
-<section id="expenses" class="active">
-  <form id="expense-form">
-    <input type="date" name="date" required>
-    <input type="text" name="desc" placeholder="Descripción" required>
-    <input type="number" name="amount" placeholder="Monto" step="0.01" min="0" required>
-    <select name="category">
-      <option>Comida</option><option>Transporte</option><option>Vivienda</option>
-      <option>Salud</option><option>Ocio</option><option>Otro</option>
-    </select>
-    <button type="submit">Agregar</button>
+  <!-- DASHBOARD -->
+  <section id="dashboard" class="tab-content space-y-4">
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <div class="card">
+        <div class="kpi-label">Gasto del mes</div>
+        <div class="mt-1 text-2xl font-semibold" id="kpi-month">0 ₲</div>
+        <div class="mt-1 text-xs text-slate-500" id="kpi-delta">vs mes anterior</div>
+      </div>
+      <div class="card">
+        <div class="kpi-label">Promedio diario</div>
+        <div class="mt-1 text-2xl font-semibold" id="kpi-avg">0 ₲</div>
+        <div class="mt-1 text-xs text-slate-500" id="kpi-proj">proyección: 0 ₲</div>
+      </div>
+      <div class="card">
+        <div class="kpi-label">Deuda pendiente</div>
+        <div class="mt-1 text-2xl font-semibold" id="kpi-debt">0 ₲</div>
+        <div class="mt-1 text-xs text-slate-500" id="kpi-debt-count">0 activas</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="flex justify-between items-baseline mb-2">
+        <h2 class="font-semibold">Presupuesto del mes</h2>
+        <span id="budget-status" class="text-xs text-slate-500"></span>
+      </div>
+      <div class="h-3 bg-slate-100 rounded-full overflow-hidden">
+        <div id="budget-bar" class="h-full transition-all duration-300" style="width:0%"></div>
+      </div>
+      <div class="mt-2 text-xs text-slate-500 flex justify-between">
+        <span id="budget-used">0 ₲</span>
+        <span id="budget-limit">sin objetivo</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 class="font-semibold mb-3">Tendencia · últimos 6 meses</h2>
+      <div class="relative h-56"><canvas id="trend-chart"></canvas></div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="card">
+        <h2 class="font-semibold mb-3">Distribución por categoría</h2>
+        <div id="chart-empty" class="hidden"></div>
+        <div class="relative h-64"><canvas id="cat-chart"></canvas></div>
+      </div>
+      <div class="card">
+        <h2 class="font-semibold mb-3">Próximos vencimientos</h2>
+        <div id="upcoming"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- EXPENSES -->
+  <section id="expenses" class="tab-content hidden space-y-4">
+    <div class="card">
+      <h2 class="font-semibold mb-3">Nuevo gasto</h2>
+      <form id="expense-form" class="grid grid-cols-2 md:grid-cols-6 gap-2">
+        <input type="date" name="date" required class="input col-span-1 md:col-span-1" aria-label="Fecha">
+        <input type="text" name="desc" placeholder="Descripción" required class="input col-span-2 md:col-span-2" maxlength="80">
+        <select name="category" class="input col-span-1 md:col-span-1" aria-label="Categoría"></select>
+        <input type="number" name="amount" placeholder="Monto (₲)" min="1" step="1" required inputmode="numeric" class="input col-span-1 md:col-span-1">
+        <button class="btn-primary col-span-2 md:col-span-1">Agregar</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+        <input type="search" id="q" placeholder="Buscar por descripción o categoría" class="input col-span-2">
+        <select id="f-cat" class="input"></select>
+        <div class="grid grid-cols-2 gap-2 col-span-2 md:col-span-1">
+          <input type="date" id="f-from" class="input" title="Desde">
+          <input type="date" id="f-to" class="input" title="Hasta">
+        </div>
+      </div>
+      <div id="expense-list"></div>
+    </div>
+  </section>
+
+  <!-- DEBTS -->
+  <section id="debts" class="tab-content hidden space-y-4">
+    <div class="card">
+      <h2 class="font-semibold mb-3">Nueva deuda</h2>
+      <form id="debt-form" class="grid grid-cols-2 md:grid-cols-6 gap-2">
+        <input type="text" name="creditor" placeholder="Acreedor" required class="input col-span-2 md:col-span-2" maxlength="60">
+        <input type="number" name="amount" placeholder="Monto total (₲)" min="1" step="1" required inputmode="numeric" class="input col-span-1 md:col-span-1">
+        <input type="date" name="due" required class="input col-span-1 md:col-span-1" aria-label="Vencimiento">
+        <input type="text" name="installments" placeholder="Cuota (ej: 3/10)" class="input col-span-1 md:col-span-1" maxlength="12">
+        <button class="btn-primary col-span-2 md:col-span-1">Agregar</button>
+      </form>
+    </div>
+    <div id="debt-list" class="space-y-3"></div>
+  </section>
+
+  <!-- BUDGETS -->
+  <section id="budgets" class="tab-content hidden space-y-4">
+    <div class="card">
+      <h2 class="font-semibold mb-2">Objetivo mensual general</h2>
+      <p class="text-xs text-slate-500 mb-3">Total de gasto que no querés superar en el mes.</p>
+      <div class="flex gap-2">
+        <input type="number" id="budget-overall" min="0" step="1" inputmode="numeric" class="input flex-1" placeholder="Ej: 3000000">
+        <button id="budget-overall-save" class="btn-primary">Guardar</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2 class="font-semibold mb-1">Límites por categoría</h2>
+      <p class="text-xs text-slate-500 mb-3">Dejá en blanco (o 0) para quitar el límite.</p>
+      <div id="budget-cats" class="space-y-3"></div>
+    </div>
+  </section>
+
+  <!-- BACKUP -->
+  <section id="backup" class="tab-content hidden space-y-4">
+    <div class="card">
+      <h2 class="font-semibold mb-1">Exportar</h2>
+      <p class="text-xs text-slate-500 mb-3">JSON para respaldo completo. CSV para llevar a Excel/Sheets.</p>
+      <div class="flex flex-wrap gap-2">
+        <button id="export-json" class="btn-ghost">Exportar JSON</button>
+        <button id="export-csv" class="btn-ghost">Exportar CSV del mes</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2 class="font-semibold mb-1">Importar</h2>
+      <p class="text-xs text-slate-500 mb-3">Reemplaza todos los datos actuales con los del archivo.</p>
+      <button id="import-btn" class="btn-ghost">Importar JSON</button>
+      <input type="file" id="import" accept="application/json" hidden>
+    </div>
+    <div class="card border-red-200 bg-red-50/40">
+      <h2 class="font-semibold text-red-700">Zona de peligro</h2>
+      <p class="text-sm text-slate-600 mt-1 mb-3">Elimina todos los datos locales. No se puede deshacer.</p>
+      <button id="wipe" class="btn-danger">Borrar todos los datos</button>
+    </div>
+    <div class="text-center text-[11px] text-slate-400 pt-2" id="storage-note"></div>
+  </section>
+</main>
+
+<dialog id="confirm-dialog" class="rounded-xl p-0 w-[min(92vw,22rem)] shadow-xl border border-slate-200">
+  <form method="dialog" class="p-5">
+    <h3 class="font-semibold text-lg">Borrar todos los datos</h3>
+    <p class="text-sm text-slate-600 mt-2">Escribí <b class="font-mono">BORRAR</b> para confirmar.</p>
+    <input type="text" id="confirm-input" class="input w-full mt-3" placeholder="BORRAR" autocomplete="off" autocapitalize="characters">
+    <div class="flex justify-end gap-2 mt-4">
+      <button value="cancel" class="btn-ghost">Cancelar</button>
+      <button value="ok" id="confirm-ok" class="btn-danger" disabled>Borrar</button>
+    </div>
   </form>
-  <div id="expense-list"></div>
-</section>
+</dialog>
 
-<section id="debts">
-  <form id="debt-form">
-    <input type="text" name="creditor" placeholder="Acreedor" required>
-    <input type="number" name="amount" placeholder="Monto" step="0.01" min="0" required>
-    <input type="date" name="due" required>
-    <button type="submit">Agregar</button>
-  </form>
-  <div id="debt-list"></div>
-</section>
-
-<div class="tools">
-  <button id="export">Exportar JSON</button>
-  <button id="import-btn">Importar JSON</button>
-  <input type="file" id="import" accept="application/json" hidden>
-</div>
+<div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 bg-ink text-white text-sm px-4 py-2 rounded-lg shadow-lg opacity-0 pointer-events-none transition-opacity duration-200 z-30"></div>
 
 <script>
-const store = {
-  get(k) { return JSON.parse(localStorage.getItem(k) || '[]'); },
-  set(k, v) { localStorage.setItem(k, JSON.stringify(v)); },
+// ============ STATE ============
+const KEY = 'finapp.v1';
+const CATEGORIES = {
+  Comida:     { icon: '🍽️', color: '#f59e0b' },
+  Transporte: { icon: '🚗', color: '#3b82f6' },
+  Servicios:  { icon: '💡', color: '#8b5cf6' },
+  Vivienda:   { icon: '🏠', color: '#10b981' },
+  Salud:      { icon: '⚕️', color: '#ef4444' },
+  Ocio:       { icon: '🎬', color: '#ec4899' },
+  Otro:       { icon: '📦', color: '#6b7280' },
 };
-const fmt = n => '₲ ' + Math.round(n).toLocaleString('es-PY');
-const today = () => new Date().toISOString().slice(0, 10);
-const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+const CAT_KEYS = Object.keys(CATEGORIES);
 
-let expenses = store.get('expenses');
-let debts = store.get('debts');
+let state = blank();
+let filters = { q: '', cat: '', from: '', to: '' };
+let activeTab = 'dashboard';
+let catChart = null, trendChart = null;
+
+function blank() {
+  return { version: 1, expenses: [], debts: [], budgets: { overall: 0, categories: {} } };
+}
+
+// ---- IndexedDB (una sola clave, in-memory + write-through) ----
+const IDB_NAME = 'finapp', IDB_STORE = 'kv', IDB_KEY = 'state';
+
+function openIdb() {
+  return new Promise((resolve, reject) => {
+    if (!('indexedDB' in window)) return reject(new Error('no idb'));
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function idbGet() {
+  try {
+    const db = await openIdb();
+    return await new Promise((res, rej) => {
+      const r = db.transaction(IDB_STORE).objectStore(IDB_STORE).get(IDB_KEY);
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+  } catch { return null; }
+}
+async function idbSet(v) {
+  try {
+    const db = await openIdb();
+    await new Promise((res, rej) => {
+      const r = db.transaction(IDB_STORE, 'readwrite').objectStore(IDB_STORE).put(v, IDB_KEY);
+      r.onsuccess = () => res();
+      r.onerror = () => rej(r.error);
+    });
+  } catch (e) {
+    // ponytail: fallback silencioso a localStorage si IDB falla (modo privado en algunos browsers)
+    try { localStorage.setItem(KEY, JSON.stringify(v)); }
+    catch { toast('No se pudo guardar. Revisá el almacenamiento del navegador.'); }
+  }
+}
+
+async function loadState() {
+  try {
+    // 1) IDB (fuente actual)
+    const fromIdb = await idbGet();
+    if (fromIdb) return migrate(fromIdb);
+
+    // 2) localStorage v1 -> IDB
+    const raw = localStorage.getItem(KEY);
+    if (raw) {
+      const data = migrate(JSON.parse(raw));
+      await idbSet(data);
+      localStorage.removeItem(KEY);
+      return data;
+    }
+
+    // 3) localStorage v0 (expenses/debts sueltos) -> IDB
+    const oldE = localStorage.getItem('expenses');
+    const oldD = localStorage.getItem('debts');
+    if (oldE || oldD) {
+      const now = todayStr();
+      const migrated = {
+        version: 1,
+        expenses: JSON.parse(oldE || '[]'),
+        debts: (JSON.parse(oldD || '[]')).map(d => ({
+          id: d.id || uid(),
+          creditor: d.creditor,
+          amount: d.amount,
+          due: d.due,
+          installments: null,
+          payments: d.paid ? [{ date: now, amount: d.amount }] : [],
+        })),
+        budgets: { overall: 0, categories: {} },
+      };
+      await idbSet(migrated);
+      localStorage.removeItem('expenses');
+      localStorage.removeItem('debts');
+      return migrated;
+    }
+    return blank();
+  } catch (e) {
+    console.error('loadState', e);
+    toast('No se pudieron leer los datos. Se inició vacío.');
+    return blank();
+  }
+}
+
+function migrate(data) {
+  if (!data || typeof data !== 'object') return blank();
+  data.version ||= 1;
+  data.expenses ||= [];
+  data.debts ||= [];
+  data.budgets ||= { overall: 0, categories: {} };
+  data.budgets.categories ||= {};
+  data.debts.forEach(d => { d.payments ||= []; });
+  return data;
+}
 
 function save() {
-  store.set('expenses', expenses);
-  store.set('debts', debts);
+  idbSet(state); // fire-and-forget; UI sigue sync
   render();
 }
 
+// ============ UTILS ============
+const $  = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+const fmt = n => (Math.round(+n || 0)).toLocaleString('es-PY') + ' ₲';
+const todayStr = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const daysBetween = (a, b) => Math.round((new Date(b + 'T00:00:00') - new Date(a + 'T00:00:00')) / 86400000);
+const currentYm = () => todayStr().slice(0, 7);
+const prevYm = () => {
+  const [y, m] = currentYm().split('-').map(Number);
+  const d = new Date(y, m - 2, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+};
+
+function debtRemaining(d) {
+  const paid = (d.payments || []).reduce((s, p) => s + p.amount, 0);
+  return Math.max(0, d.amount - paid);
+}
+function debtStatus(d) {
+  const rem = debtRemaining(d);
+  if (rem === 0) return { label: 'Pagada', cls: 'bg-emerald-100 text-emerald-700' };
+  const days = daysBetween(todayStr(), d.due);
+  if (days < 0)  return { label: `Vencida hace ${-days}d`, cls: 'bg-red-100 text-red-700' };
+  if (days <= 7) return { label: days === 0 ? 'Vence hoy' : `Vence en ${days}d`, cls: 'bg-amber-100 text-amber-700' };
+  return { label: `Vence en ${days}d`, cls: 'bg-emerald-100 text-emerald-700' };
+}
+
+function toast(msg, ms = 2200) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.style.opacity = '1';
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { t.style.opacity = '0'; }, ms);
+}
+
+function emptyState(icon, title, sub) {
+  return `<div class="text-center py-8">
+    <div class="text-4xl mb-2 opacity-60">${icon}</div>
+    <div class="font-medium text-slate-700">${esc(title)}</div>
+    <div class="text-sm text-slate-500 mt-1">${esc(sub)}</div>
+  </div>`;
+}
+
+function download(content, name, type) {
+  const blob = new Blob([content], { type });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+// ============ RENDER ============
 function render() {
+  renderTabs();
+  renderDashboard();
+  renderExpenses();
+  renderDebts();
+  renderBudgets();
+}
+
+function renderTabs() {
+  $$('.tab').forEach(b => b.classList.toggle('tab-active', b.dataset.tab === activeTab));
+  $$('.tab-content').forEach(s => s.classList.toggle('hidden', s.id !== activeTab));
+}
+
+function renderDashboard() {
+  const ym = currentYm(), pYm = prevYm();
+  const monthSum = state.expenses.filter(e => e.date.startsWith(ym)).reduce((s, e) => s + e.amount, 0);
+  const prevSum  = state.expenses.filter(e => e.date.startsWith(pYm)).reduce((s, e) => s + e.amount, 0);
+
+  $('#kpi-month').textContent = fmt(monthSum);
+  const deltaEl = $('#kpi-delta');
+  if (prevSum > 0) {
+    const pct = ((monthSum - prevSum) / prevSum) * 100;
+    const sign = pct >= 0 ? '+' : '';
+    const cls = pct > 0 ? 'text-red-600' : pct < 0 ? 'text-emerald-600' : 'text-slate-500';
+    deltaEl.className = 'mt-1 text-xs ' + cls;
+    deltaEl.textContent = `${sign}${pct.toFixed(1)}% que el mes anterior (${fmt(prevSum)})`;
+  } else {
+    deltaEl.className = 'mt-1 text-xs text-slate-500';
+    deltaEl.textContent = monthSum > 0 ? 'Sin gastos en el mes anterior' : 'Aún sin datos';
+  }
+
   const now = new Date();
-  const ym = now.toISOString().slice(0, 7);
-  const monthTotal = expenses.filter(e => e.date.startsWith(ym)).reduce((s, e) => s + e.amount, 0);
-  const debtTotal = debts.filter(d => !d.paid).reduce((s, d) => s + d.amount, 0);
-  const grandTotal = expenses.reduce((s, e) => s + e.amount, 0);
-  document.getElementById('s-month').textContent = fmt(monthTotal);
-  document.getElementById('s-debt').textContent = fmt(debtTotal);
-  document.getElementById('s-total').textContent = fmt(grandTotal);
+  const day = now.getDate();
+  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const avg = monthSum / day;
+  $('#kpi-avg').textContent = fmt(avg);
+  $('#kpi-proj').textContent = `Proyección fin de mes: ${fmt(avg * daysInMonth)}`;
 
-  const el = document.getElementById('expense-list');
-  if (!expenses.length) { el.innerHTML = '<div class="empty">Sin gastos aún.</div>'; }
-  else {
-    const grouped = {};
-    [...expenses].sort((a, b) => b.date.localeCompare(a.date)).forEach(e => {
-      const m = e.date.slice(0, 7);
-      (grouped[m] ||= []).push(e);
-    });
-    el.innerHTML = Object.entries(grouped).map(([m, items]) => `
-      <div class="month">${m} — ${fmt(items.reduce((s, e) => s + e.amount, 0))}</div>
-      <table><thead><tr><th>Fecha</th><th>Descripción</th><th>Categoría</th><th>Monto</th><th></th></tr></thead>
-      <tbody>${items.map(e => `
-        <tr><td>${e.date}</td><td>${escapeHtml(e.desc)}</td><td>${e.category}</td><td>${fmt(e.amount)}</td>
-        <td class="row-actions"><button class="del" data-del-expense="${e.id}">Borrar</button></td></tr>
-      `).join('')}</tbody></table>
-    `).join('');
-  }
+  const activeDebts = state.debts.filter(d => debtRemaining(d) > 0);
+  const debtTotal = activeDebts.reduce((s, d) => s + debtRemaining(d), 0);
+  $('#kpi-debt').textContent = fmt(debtTotal);
+  $('#kpi-debt-count').textContent = `${activeDebts.length} activa${activeDebts.length === 1 ? '' : 's'}`;
 
-  const dl = document.getElementById('debt-list');
-  if (!debts.length) { dl.innerHTML = '<div class="empty">Sin deudas.</div>'; }
-  else {
-    dl.innerHTML = `<table><thead><tr><th>Acreedor</th><th>Monto</th><th>Vence</th><th>Estado</th><th></th></tr></thead>
-      <tbody>${[...debts].sort((a, b) => a.due.localeCompare(b.due)).map(d => `
-        <tr><td>${escapeHtml(d.creditor)}</td><td>${fmt(d.amount)}</td><td>${d.due}</td>
-        <td>${d.paid ? '<span class="paid">Pagado</span>' : 'Pendiente'}</td>
-        <td class="row-actions">
-          <button data-toggle-debt="${d.id}">${d.paid ? 'Marcar pendiente' : 'Marcar pagado'}</button>
-          <button class="del" data-del-debt="${d.id}">Borrar</button>
-        </td></tr>
-      `).join('')}</tbody></table>`;
+  const limit = state.budgets.overall || 0;
+  const pct = limit > 0 ? Math.min(100, (monthSum / limit) * 100) : 0;
+  const bar = $('#budget-bar');
+  bar.style.width = pct + '%';
+  bar.className = 'h-full transition-all duration-300 ' +
+    (limit === 0 ? 'bg-slate-300' :
+     monthSum >= limit ? 'bg-red-500' :
+     monthSum >= limit * 0.8 ? 'bg-amber-500' : 'bg-primary');
+  $('#budget-used').textContent = fmt(monthSum);
+  $('#budget-limit').textContent = limit > 0 ? `de ${fmt(limit)}` : 'sin objetivo definido';
+  const status = $('#budget-status');
+  if (limit === 0)       status.textContent = 'Definí un objetivo en Presupuestos';
+  else if (pct >= 100)   { status.textContent = 'Superaste el objetivo'; status.className = 'text-xs text-red-600 font-medium'; }
+  else if (pct >= 80)    { status.textContent = 'Cerca del límite'; status.className = 'text-xs text-amber-600 font-medium'; }
+  else                   { status.textContent = `${pct.toFixed(0)}% usado`; status.className = 'text-xs text-slate-500'; }
+
+  // Charts (Chart.js): donut por categoría y barras 6 meses
+  renderCategoryChart(ym);
+  renderTrendChart();
+
+  // Próximos vencimientos (top 5 no pagadas)
+  const up = state.debts
+    .filter(d => debtRemaining(d) > 0)
+    .sort((a, b) => a.due.localeCompare(b.due))
+    .slice(0, 5);
+  const upEl = $('#upcoming');
+  if (!up.length) {
+    upEl.innerHTML = emptyState('✅', 'Sin deudas activas', 'Cuando agregues alguna aparecerá acá.');
+  } else {
+    upEl.innerHTML = up.map(d => {
+      const s = debtStatus(d);
+      return `<div class="flex items-center justify-between py-2 border-b border-slate-100 last:border-0">
+        <div class="min-w-0">
+          <div class="font-medium truncate">${esc(d.creditor)}</div>
+          <div class="text-xs text-slate-500">${d.due}${d.installments ? ' · ' + esc(d.installments) : ''}</div>
+        </div>
+        <div class="text-right shrink-0 ml-3">
+          <div class="text-sm font-semibold">${fmt(debtRemaining(d))}</div>
+          <span class="badge ${s.cls} mt-0.5">${s.label}</span>
+        </div>
+      </div>`;
+    }).join('');
   }
 }
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function renderCategoryChart(ym) {
+  const byCat = {};
+  state.expenses.filter(e => e.date.startsWith(ym)).forEach(e => {
+    byCat[e.category] = (byCat[e.category] || 0) + e.amount;
+  });
+  const entries = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
+  const emptyEl = $('#chart-empty');
+  const canvas  = $('#cat-chart');
+
+  if (!entries.length) {
+    canvas.style.display = 'none';
+    emptyEl.classList.remove('hidden');
+    emptyEl.innerHTML = emptyState('📊', 'Sin gastos este mes', 'Registrá el primero para ver el desglose.');
+    if (catChart) { catChart.destroy(); catChart = null; }
+    return;
+  }
+  canvas.style.display = '';
+  emptyEl.classList.add('hidden');
+  if (typeof Chart === 'undefined') return; // ponytail: Chart.js aún no cargó, próximo render lo pintará
+
+  const labels = entries.map(([k]) => `${CATEGORIES[k].icon} ${k}`);
+  const data   = entries.map(([_, v]) => v);
+  const colors = entries.map(([k]) => (CATEGORIES[k] || CATEGORIES.Otro).color);
+
+  if (catChart) {
+    catChart.data.labels = labels;
+    catChart.data.datasets[0].data = data;
+    catChart.data.datasets[0].backgroundColor = colors;
+    catChart.update();
+    return;
+  }
+  catChart = new Chart(canvas, {
+    type: 'doughnut',
+    data: { labels, datasets: [{ data, backgroundColor: colors, borderWidth: 0, hoverOffset: 6 }] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '62%',
+      plugins: {
+        legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 }, color: '#334155' } },
+        tooltip: {
+          backgroundColor: '#0F172A',
+          padding: 10,
+          callbacks: {
+            label: c => {
+              const total = c.dataset.data.reduce((s, v) => s + v, 0);
+              const p = total ? (c.raw / total) * 100 : 0;
+              return `${c.label}: ${fmt(c.raw)} · ${p.toFixed(0)}%`;
+            },
+          },
+        },
+      },
+    },
+  });
 }
 
-document.querySelectorAll('nav button').forEach(b => {
-  b.onclick = () => {
-    document.querySelectorAll('nav button').forEach(x => x.classList.remove('active'));
-    document.querySelectorAll('section').forEach(x => x.classList.remove('active'));
-    b.classList.add('active');
-    document.getElementById(b.dataset.tab).classList.add('active');
-  };
-});
+function renderTrendChart() {
+  const canvas = $('#trend-chart');
+  if (typeof Chart === 'undefined') return;
+  const now = new Date();
+  const labels = [], data = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    labels.push(d.toLocaleDateString('es-PY', { month: 'short' }));
+    data.push(state.expenses.filter(e => e.date.startsWith(ym)).reduce((s, e) => s + e.amount, 0));
+  }
+  if (trendChart) {
+    trendChart.data.labels = labels;
+    trendChart.data.datasets[0].data = data;
+    trendChart.update();
+    return;
+  }
+  trendChart = new Chart(canvas, {
+    type: 'bar',
+    data: { labels, datasets: [{ data, backgroundColor: '#2563EB', borderRadius: 6, maxBarThickness: 44 }] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#0F172A',
+          padding: 10,
+          callbacks: { label: c => fmt(c.raw) },
+        },
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: '#64748b', font: { size: 11 } } },
+        y: {
+          beginAtZero: true,
+          grid: { color: '#f1f5f9' },
+          ticks: {
+            color: '#64748b',
+            font: { size: 10 },
+            callback: v => v >= 1000000 ? (v / 1000000).toFixed(1) + 'M'
+                          : v >= 1000    ? (v / 1000).toFixed(0)    + 'k'
+                          : v,
+          },
+        },
+      },
+    },
+  });
+}
 
-document.getElementById('expense-form').addEventListener('submit', e => {
+function renderExpenses() {
+  const list = $('#expense-list');
+  let items = state.expenses.slice();
+  const q = filters.q.trim().toLowerCase();
+  if (q)             items = items.filter(e => e.desc.toLowerCase().includes(q) || e.category.toLowerCase().includes(q));
+  if (filters.cat)   items = items.filter(e => e.category === filters.cat);
+  if (filters.from)  items = items.filter(e => e.date >= filters.from);
+  if (filters.to)    items = items.filter(e => e.date <= filters.to);
+  items.sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
+
+  if (!items.length) {
+    list.innerHTML = state.expenses.length
+      ? emptyState('🔎', 'Sin resultados', 'Probá con otros filtros.')
+      : emptyState('📭', 'Sin gastos aún', 'Agregá el primero desde el formulario de arriba.');
+    return;
+  }
+
+  const grouped = {};
+  items.forEach(e => (grouped[e.date.slice(0, 7)] ||= []).push(e));
+  list.innerHTML = Object.entries(grouped).map(([m, arr]) => {
+    const sum = arr.reduce((s, e) => s + e.amount, 0);
+    return `
+      <div class="mt-4 first:mt-0">
+        <div class="flex justify-between items-baseline mb-1.5 text-xs uppercase tracking-wide text-slate-500 font-medium">
+          <span>${m}</span><span>${fmt(sum)}</span>
+        </div>
+        <div class="border border-slate-200 rounded-xl overflow-hidden bg-white">
+          ${arr.map(e => {
+            const meta = CATEGORIES[e.category] || CATEGORIES.Otro;
+            return `
+              <div class="flex items-center gap-3 p-3 border-b border-slate-100 last:border-0 hover:bg-slate-50 transition">
+                <div class="w-9 h-9 rounded-lg flex items-center justify-center text-lg shrink-0" style="background:${meta.color}22" title="${esc(e.category)}">${meta.icon}</div>
+                <div class="flex-1 min-w-0">
+                  <div class="font-medium truncate">${esc(e.desc)}</div>
+                  <div class="text-xs text-slate-500">${e.date} · ${esc(e.category)}</div>
+                </div>
+                <div class="font-semibold text-sm">${fmt(e.amount)}</div>
+                <button class="text-slate-300 hover:text-red-600 p-1 -m-1 transition" data-del-expense="${e.id}" title="Borrar" aria-label="Borrar gasto">✕</button>
+              </div>`;
+          }).join('')}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function renderDebts() {
+  const list = $('#debt-list');
+  const items = state.debts.slice().sort((a, b) => {
+    const ra = debtRemaining(a), rb = debtRemaining(b);
+    if ((ra === 0) !== (rb === 0)) return ra === 0 ? 1 : -1;
+    return a.due.localeCompare(b.due);
+  });
+  if (!items.length) {
+    list.innerHTML = emptyState('💳', 'Sin deudas', 'Agregá una obligación para hacer seguimiento.');
+    return;
+  }
+  list.innerHTML = items.map(d => {
+    const rem = debtRemaining(d);
+    const paid = d.amount - rem;
+    const pctPaid = d.amount > 0 ? (paid / d.amount) * 100 : 100;
+    const s = debtStatus(d);
+    const history = (d.payments || []).slice().sort((a, b) => b.date.localeCompare(a.date));
+    return `
+      <div class="card">
+        <div class="flex justify-between items-start gap-3">
+          <div class="min-w-0">
+            <div class="font-semibold truncate">${esc(d.creditor)}</div>
+            <div class="text-xs text-slate-500 mt-0.5">
+              Vence ${d.due}${d.installments ? ' · Cuota ' + esc(d.installments) : ''}
+            </div>
+          </div>
+          <div class="text-right shrink-0">
+            <div class="text-lg font-semibold">${fmt(rem)}</div>
+            <div class="text-[11px] text-slate-500">de ${fmt(d.amount)}</div>
+            <span class="badge ${s.cls} mt-1">${s.label}</span>
+          </div>
+        </div>
+
+        <div class="mt-3 h-2 bg-slate-100 rounded overflow-hidden">
+          <div class="h-full bg-primary transition-all duration-500" style="width:${pctPaid}%"></div>
+        </div>
+        <div class="mt-1 text-[11px] text-slate-500 flex justify-between">
+          <span>Pagado ${fmt(paid)}</span>
+          <span>${pctPaid.toFixed(0)}%</span>
+        </div>
+
+        ${rem > 0 ? `
+          <form class="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2" data-pay-debt="${d.id}">
+            <input type="number" name="amount" placeholder="Abonar (₲)" min="1" max="${rem}" step="1" required inputmode="numeric" class="input col-span-1 md:col-span-2">
+            <input type="date" name="date" value="${todayStr()}" required class="input col-span-1">
+            <button class="btn-primary col-span-2 md:col-span-1">Registrar pago</button>
+          </form>` : ''}
+
+        ${history.length ? `
+          <details class="mt-3">
+            <summary class="text-xs text-slate-500 cursor-pointer select-none hover:text-ink">Historial de pagos (${history.length})</summary>
+            <ul class="mt-2 text-sm divide-y divide-slate-100 border-t border-slate-100 pt-1">
+              ${history.map((p, i) => `
+                <li class="flex justify-between items-center py-1.5">
+                  <span class="text-slate-600">${p.date}</span>
+                  <span class="flex items-center gap-3">
+                    <span class="font-medium">${fmt(p.amount)}</span>
+                    <button class="text-slate-300 hover:text-red-600 transition" data-del-payment="${d.id}:${i}" title="Borrar pago" aria-label="Borrar pago">✕</button>
+                  </span>
+                </li>`).join('')}
+            </ul>
+          </details>` : ''}
+
+        <div class="mt-3 text-right">
+          <button class="text-xs text-slate-400 hover:text-red-600 transition" data-del-debt="${d.id}">Borrar deuda</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function renderBudgets() {
+  $('#budget-overall').value = state.budgets.overall || '';
+  const ym = currentYm();
+  const byCat = {};
+  state.expenses.filter(e => e.date.startsWith(ym)).forEach(e => {
+    byCat[e.category] = (byCat[e.category] || 0) + e.amount;
+  });
+  $('#budget-cats').innerHTML = CAT_KEYS.map(cat => {
+    const limit = state.budgets.categories[cat] || 0;
+    const used  = byCat[cat] || 0;
+    const p     = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
+    const meta  = CATEGORIES[cat];
+    const barCls = limit === 0 ? 'bg-slate-300'
+                  : used >= limit ? 'bg-red-500'
+                  : used >= limit * 0.8 ? 'bg-amber-500'
+                  : 'bg-primary';
+    const warn = limit > 0 && used >= limit * 0.8
+      ? `<span class="badge ${used >= limit ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'} ml-2">${used >= limit ? 'Superado' : 'Cerca'}</span>`
+      : '';
+    return `
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-lg flex items-center justify-center text-lg shrink-0" style="background:${meta.color}22">${meta.icon}</div>
+        <div class="flex-1 min-w-0">
+          <div class="flex justify-between items-center text-sm">
+            <span>${cat}${warn}</span>
+            <span class="text-slate-500 text-xs">${fmt(used)}${limit > 0 ? ' / ' + fmt(limit) : ''}</span>
+          </div>
+          <div class="mt-1 h-1.5 bg-slate-100 rounded overflow-hidden">
+            <div class="h-full ${barCls} transition-all duration-500" style="width:${p}%"></div>
+          </div>
+        </div>
+        <input type="number" min="0" step="1" inputmode="numeric" value="${limit || ''}" placeholder="Tope" data-budget-cat="${cat}" class="input w-28 text-right" aria-label="Tope para ${cat}">
+      </div>`;
+  }).join('');
+}
+
+// ============ EVENTS ============
+$$('.tab').forEach(b => b.addEventListener('click', () => { activeTab = b.dataset.tab; render(); }));
+
+$('#expense-form').addEventListener('submit', e => {
   e.preventDefault();
   const f = new FormData(e.target);
-  expenses.push({ id: uid(), date: f.get('date'), desc: f.get('desc'), category: f.get('category'), amount: +f.get('amount') });
+  const amount = +f.get('amount');
+  if (!(amount > 0)) return;
+  state.expenses.push({
+    id: uid(),
+    date: f.get('date'),
+    desc: (f.get('desc') || '').trim(),
+    category: f.get('category'),
+    amount,
+  });
   e.target.reset();
-  e.target.date.value = today();
+  e.target.date.value = todayStr();
   save();
+  toast('Gasto agregado');
 });
 
-document.getElementById('debt-form').addEventListener('submit', e => {
+$('#debt-form').addEventListener('submit', e => {
   e.preventDefault();
   const f = new FormData(e.target);
-  debts.push({ id: uid(), creditor: f.get('creditor'), amount: +f.get('amount'), due: f.get('due'), paid: false });
+  const amount = +f.get('amount');
+  if (!(amount > 0)) return;
+  state.debts.push({
+    id: uid(),
+    creditor: (f.get('creditor') || '').trim(),
+    amount,
+    due: f.get('due'),
+    installments: (f.get('installments') || '').trim() || null,
+    payments: [],
+  });
   e.target.reset();
   save();
+  toast('Deuda agregada');
 });
 
 document.addEventListener('click', e => {
-  const id = e.target.dataset.delExpense;
-  if (id) { expenses = expenses.filter(x => x.id !== id); save(); return; }
-  const did = e.target.dataset.delDebt;
-  if (did) { debts = debts.filter(x => x.id !== did); save(); return; }
-  const tid = e.target.dataset.toggleDebt;
-  if (tid) { const d = debts.find(x => x.id === tid); d.paid = !d.paid; save(); }
+  const t = e.target.closest('[data-del-expense],[data-del-debt],[data-del-payment]');
+  if (!t) return;
+  if (t.dataset.delExpense) {
+    state.expenses = state.expenses.filter(x => x.id !== t.dataset.delExpense);
+    save(); toast('Gasto borrado');
+  } else if (t.dataset.delDebt) {
+    if (confirm('¿Borrar esta deuda y su historial?')) {
+      state.debts = state.debts.filter(x => x.id !== t.dataset.delDebt);
+      save(); toast('Deuda borrada');
+    }
+  } else if (t.dataset.delPayment) {
+    const [did, idx] = t.dataset.delPayment.split(':');
+    const d = state.debts.find(x => x.id === did);
+    if (d) { d.payments.splice(+idx, 1); save(); toast('Pago borrado'); }
+  }
 });
 
-document.getElementById('export').onclick = () => {
-  const blob = new Blob([JSON.stringify({ expenses, debts }, null, 2)], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `finanzas-${today()}.json`;
-  a.click();
-};
+document.addEventListener('submit', e => {
+  const form = e.target;
+  const did = form.dataset?.payDebt;
+  if (!did) return;
+  e.preventDefault();
+  const d = state.debts.find(x => x.id === did);
+  if (!d) return;
+  const f = new FormData(form);
+  const amt = +f.get('amount');
+  const rem = debtRemaining(d);
+  if (!(amt > 0) || amt > rem) { toast('Monto inválido'); return; }
+  d.payments ||= [];
+  d.payments.push({ date: f.get('date'), amount: amt });
+  save();
+  toast(debtRemaining(d) === 0 ? '¡Deuda saldada!' : 'Pago registrado');
+});
 
-document.getElementById('import-btn').onclick = () => document.getElementById('import').click();
-document.getElementById('import').onchange = async e => {
+$('#q').addEventListener('input',  e => { filters.q   = e.target.value; renderExpenses(); });
+$('#f-cat').addEventListener('change', e => { filters.cat = e.target.value; renderExpenses(); });
+$('#f-from').addEventListener('change', e => { filters.from = e.target.value; renderExpenses(); });
+$('#f-to').addEventListener('change',   e => { filters.to   = e.target.value; renderExpenses(); });
+
+$('#budget-overall-save').addEventListener('click', () => {
+  state.budgets.overall = Math.max(0, +$('#budget-overall').value || 0);
+  save(); toast('Objetivo guardado');
+});
+
+document.addEventListener('change', e => {
+  const cat = e.target.dataset?.budgetCat;
+  if (!cat) return;
+  const v = Math.max(0, +e.target.value || 0);
+  if (v > 0) state.budgets.categories[cat] = v;
+  else       delete state.budgets.categories[cat];
+  save();
+});
+
+$('#export-json').addEventListener('click', () => {
+  download(JSON.stringify(state, null, 2), `finanzas-${todayStr()}.json`, 'application/json');
+});
+$('#export-csv').addEventListener('click', () => {
+  const ym = currentYm();
+  const rows = [['Fecha', 'Descripcion', 'Categoria', 'Monto']];
+  state.expenses.filter(e => e.date.startsWith(ym)).forEach(e => {
+    rows.push([e.date, e.desc, e.category, e.amount]);
+  });
+  const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+  download('\uFEFF' + csv, `finanzas-${ym}.csv`, 'text/csv;charset=utf-8');
+});
+$('#import-btn').addEventListener('click', () => $('#import').click());
+$('#import').addEventListener('change', async e => {
   const file = e.target.files[0];
+  e.target.value = '';
   if (!file) return;
   try {
-    const data = JSON.parse(await file.text());
-    if (Array.isArray(data.expenses)) expenses = data.expenses;
-    if (Array.isArray(data.debts)) debts = data.debts;
+    const parsed = JSON.parse(await file.text());
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.expenses)) throw new Error('shape');
+    if (!confirm('Reemplazar todos los datos actuales con los del archivo?')) return;
+    state = migrate(parsed);
     save();
-    alert('Importado.');
-  } catch { alert('Archivo inválido.'); }
-};
+    toast('Datos importados');
+  } catch {
+    alert('Archivo inválido.');
+  }
+});
 
-document.querySelector('#expense-form input[name=date]').value = today();
+$('#wipe').addEventListener('click', () => {
+  const dlg = $('#confirm-dialog');
+  $('#confirm-input').value = '';
+  $('#confirm-ok').disabled = true;
+  dlg.showModal();
+});
+$('#confirm-input').addEventListener('input', e => {
+  $('#confirm-ok').disabled = e.target.value !== 'BORRAR';
+});
+$('#confirm-dialog').addEventListener('close', async () => {
+  const dlg = $('#confirm-dialog');
+  if (dlg.returnValue === 'ok' && $('#confirm-input').value === 'BORRAR') {
+    state = blank();
+    localStorage.removeItem(KEY);
+    localStorage.removeItem('expenses');
+    localStorage.removeItem('debts');
+    await idbSet(state);
+    render();
+    toast('Datos borrados');
+  }
+});
+
+// ============ INIT ============
+const catOpts = CAT_KEYS.map(c => `<option value="${c}">${CATEGORIES[c].icon} ${c}</option>`).join('');
+document.querySelector('#expense-form select[name=category]').innerHTML = catOpts;
+$('#f-cat').innerHTML = '<option value="">Todas las categorías</option>' + catOpts;
+document.querySelector('#expense-form input[name=date]').value = todayStr();
+
+$('#today').textContent = new Date().toLocaleDateString('es-PY', {
+  weekday: 'long', day: 'numeric', month: 'long',
+});
+
+// Estado online/offline
+const offlineBadge = $('#offline-badge');
+const updateOnline = () => offlineBadge.classList.toggle('hidden', navigator.onLine);
+window.addEventListener('online',  updateOnline);
+window.addEventListener('offline', updateOnline);
+updateOnline();
+
+// PWA
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW', err));
+  });
+}
+
+async function updateStorageNote() {
+  try {
+    const data = await idbGet();
+    const bytes = new Blob([JSON.stringify(data || {})]).size;
+    $('#storage-note').textContent = `${(bytes / 1024).toFixed(1)} KB en IndexedDB`;
+  } catch {}
+}
+
+// Boot: primer render sync (skeleton), luego cargamos state y re-renderizamos.
+// Chart.js entra por defer -> re-pintamos cuando `load` dispara para que los gráficos aparezcan.
 render();
+
+(async () => {
+  state = await loadState();
+  render();
+  updateStorageNote();
+})();
+
+window.addEventListener('load', () => {
+  // Chart.js ya disponible; re-render si aún no se dibujó.
+  if (!catChart || !trendChart) renderDashboard();
+});
+
+// ============ SELF-CHECK (ponytail: sanity mínima en dev, no corre en prod visible) ============
+if (location.hash === '#selftest') {
+  console.assert(fmt(1500000) === '1.500.000 ₲', 'fmt PYG');
+  console.assert(debtRemaining({ amount: 100, payments: [{ amount: 30 }, { amount: 20 }] }) === 50, 'remaining');
+  console.assert(debtRemaining({ amount: 100, payments: [{ amount: 200 }] }) === 0, 'remaining floor 0');
+  console.assert(daysBetween('2026-01-01', '2026-01-11') === 10, 'daysBetween');
+  console.log('selftest OK');
+}
 </script>
 </body>
 </html>
