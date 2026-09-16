@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Finanzas</title>
+<style>
+  :root { --bg:#fafafa; --fg:#111; --muted:#666; --line:#e4e4e4; --accent:#2563eb; --danger:#dc2626; --ok:#16a34a; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--fg); margin: 0; padding: 1rem; max-width: 48rem; margin-inline: auto; }
+  h1 { margin: 0 0 1rem; }
+  nav { display: flex; gap: .5rem; margin-bottom: 1rem; border-bottom: 1px solid var(--line); }
+  nav button { background: none; border: 0; padding: .6rem 1rem; cursor: pointer; font: inherit; color: var(--muted); border-bottom: 2px solid transparent; }
+  nav button.active { color: var(--fg); border-color: var(--accent); }
+  section { display: none; }
+  section.active { display: block; }
+  form { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: .5rem; margin-bottom: 1rem; }
+  input, select, button { font: inherit; padding: .5rem .6rem; border: 1px solid var(--line); border-radius: .4rem; background: white; }
+  form button { background: var(--accent); color: white; border-color: var(--accent); cursor: pointer; }
+  .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem,1fr)); gap: .5rem; margin-bottom: 1rem; }
+  .card { background: white; border: 1px solid var(--line); border-radius: .5rem; padding: .8rem 1rem; }
+  .card .label { color: var(--muted); font-size: .85rem; }
+  .card .value { font-size: 1.4rem; font-weight: 600; margin-top: .2rem; }
+  table { width: 100%; border-collapse: collapse; background: white; border: 1px solid var(--line); border-radius: .5rem; overflow: hidden; }
+  th, td { padding: .5rem .6rem; text-align: left; border-bottom: 1px solid var(--line); font-size: .9rem; }
+  th { background: #f4f4f4; font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  .row-actions button { padding: .2rem .5rem; font-size: .8rem; margin-left: .2rem; }
+  .del { color: var(--danger); border-color: var(--danger); background: white; cursor: pointer; }
+  .paid { color: var(--ok); }
+  .month { margin: 1rem 0 .3rem; font-weight: 600; color: var(--muted); }
+  .tools { display: flex; gap: .5rem; margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+  .tools button { background: white; cursor: pointer; }
+  .empty { color: var(--muted); font-style: italic; padding: 1rem; text-align: center; }
+</style>
+</head>
+<body>
+<h1>Finanzas</h1>
+
+<div class="summary">
+  <div class="card"><div class="label">Gasto este mes</div><div class="value" id="s-month">₲ 0</div></div>
+  <div class="card"><div class="label">Deuda pendiente</div><div class="value" id="s-debt">₲ 0</div></div>
+  <div class="card"><div class="label">Gasto total</div><div class="value" id="s-total">₲ 0</div></div>
+</div>
+
+<nav>
+  <button data-tab="expenses" class="active">Gastos</button>
+  <button data-tab="debts">Deudas</button>
+</nav>
+
+<section id="expenses" class="active">
+  <form id="expense-form">
+    <input type="date" name="date" required>
+    <input type="text" name="desc" placeholder="Descripción" required>
+    <input type="number" name="amount" placeholder="Monto" step="0.01" min="0" required>
+    <select name="category">
+      <option>Comida</option><option>Transporte</option><option>Vivienda</option>
+      <option>Salud</option><option>Ocio</option><option>Otro</option>
+    </select>
+    <button type="submit">Agregar</button>
+  </form>
+  <div id="expense-list"></div>
+</section>
+
+<section id="debts">
+  <form id="debt-form">
+    <input type="text" name="creditor" placeholder="Acreedor" required>
+    <input type="number" name="amount" placeholder="Monto" step="0.01" min="0" required>
+    <input type="date" name="due" required>
+    <button type="submit">Agregar</button>
+  </form>
+  <div id="debt-list"></div>
+</section>
+
+<div class="tools">
+  <button id="export">Exportar JSON</button>
+  <button id="import-btn">Importar JSON</button>
+  <input type="file" id="import" accept="application/json" hidden>
+</div>
+
+<script>
+const store = {
+  get(k) { return JSON.parse(localStorage.getItem(k) || '[]'); },
+  set(k, v) { localStorage.setItem(k, JSON.stringify(v)); },
+};
+const fmt = n => '₲ ' + Math.round(n).toLocaleString('es-PY');
+const today = () => new Date().toISOString().slice(0, 10);
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+let expenses = store.get('expenses');
+let debts = store.get('debts');
+
+function save() {
+  store.set('expenses', expenses);
+  store.set('debts', debts);
+  render();
+}
+
+function render() {
+  const now = new Date();
+  const ym = now.toISOString().slice(0, 7);
+  const monthTotal = expenses.filter(e => e.date.startsWith(ym)).reduce((s, e) => s + e.amount, 0);
+  const debtTotal = debts.filter(d => !d.paid).reduce((s, d) => s + d.amount, 0);
+  const grandTotal = expenses.reduce((s, e) => s + e.amount, 0);
+  document.getElementById('s-month').textContent = fmt(monthTotal);
+  document.getElementById('s-debt').textContent = fmt(debtTotal);
+  document.getElementById('s-total').textContent = fmt(grandTotal);
+
+  const el = document.getElementById('expense-list');
+  if (!expenses.length) { el.innerHTML = '<div class="empty">Sin gastos aún.</div>'; }
+  else {
+    const grouped = {};
+    [...expenses].sort((a, b) => b.date.localeCompare(a.date)).forEach(e => {
+      const m = e.date.slice(0, 7);
+      (grouped[m] ||= []).push(e);
+    });
+    el.innerHTML = Object.entries(grouped).map(([m, items]) => `
+      <div class="month">${m} — ${fmt(items.reduce((s, e) => s + e.amount, 0))}</div>
+      <table><thead><tr><th>Fecha</th><th>Descripción</th><th>Categoría</th><th>Monto</th><th></th></tr></thead>
+      <tbody>${items.map(e => `
+        <tr><td>${e.date}</td><td>${escapeHtml(e.desc)}</td><td>${e.category}</td><td>${fmt(e.amount)}</td>
+        <td class="row-actions"><button class="del" data-del-expense="${e.id}">Borrar</button></td></tr>
+      `).join('')}</tbody></table>
+    `).join('');
+  }
+
+  const dl = document.getElementById('debt-list');
+  if (!debts.length) { dl.innerHTML = '<div class="empty">Sin deudas.</div>'; }
+  else {
+    dl.innerHTML = `<table><thead><tr><th>Acreedor</th><th>Monto</th><th>Vence</th><th>Estado</th><th></th></tr></thead>
+      <tbody>${[...debts].sort((a, b) => a.due.localeCompare(b.due)).map(d => `
+        <tr><td>${escapeHtml(d.creditor)}</td><td>${fmt(d.amount)}</td><td>${d.due}</td>
+        <td>${d.paid ? '<span class="paid">Pagado</span>' : 'Pendiente'}</td>
+        <td class="row-actions">
+          <button data-toggle-debt="${d.id}">${d.paid ? 'Marcar pendiente' : 'Marcar pagado'}</button>
+          <button class="del" data-del-debt="${d.id}">Borrar</button>
+        </td></tr>
+      `).join('')}</tbody></table>`;
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+document.querySelectorAll('nav button').forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll('nav button').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('section').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    document.getElementById(b.dataset.tab).classList.add('active');
+  };
+});
+
+document.getElementById('expense-form').addEventListener('submit', e => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  expenses.push({ id: uid(), date: f.get('date'), desc: f.get('desc'), category: f.get('category'), amount: +f.get('amount') });
+  e.target.reset();
+  e.target.date.value = today();
+  save();
+});
+
+document.getElementById('debt-form').addEventListener('submit', e => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  debts.push({ id: uid(), creditor: f.get('creditor'), amount: +f.get('amount'), due: f.get('due'), paid: false });
+  e.target.reset();
+  save();
+});
+
+document.addEventListener('click', e => {
+  const id = e.target.dataset.delExpense;
+  if (id) { expenses = expenses.filter(x => x.id !== id); save(); return; }
+  const did = e.target.dataset.delDebt;
+  if (did) { debts = debts.filter(x => x.id !== did); save(); return; }
+  const tid = e.target.dataset.toggleDebt;
+  if (tid) { const d = debts.find(x => x.id === tid); d.paid = !d.paid; save(); }
+});
+
+document.getElementById('export').onclick = () => {
+  const blob = new Blob([JSON.stringify({ expenses, debts }, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `finanzas-${today()}.json`;
+  a.click();
+};
+
+document.getElementById('import-btn').onclick = () => document.getElementById('import').click();
+document.getElementById('import').onchange = async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    const data = JSON.parse(await file.text());
+    if (Array.isArray(data.expenses)) expenses = data.expenses;
+    if (Array.isArray(data.debts)) debts = data.debts;
+    save();
+    alert('Importado.');
+  } catch { alert('Archivo inválido.'); }
+};
+
+document.querySelector('#expense-form input[name=date]').value = today();
+render();
+</script>
+</body>
+</html>
