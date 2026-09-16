@@ -75,7 +75,10 @@
         <div class="text-[11px] text-slate-500 leading-tight" id="today"></div>
       </div>
     </div>
-    <div id="offline-badge" class="badge bg-amber-100 text-amber-700 hidden">Sin conexión</div>
+    <div class="flex items-center gap-2">
+      <div id="offline-badge" class="badge bg-amber-100 text-amber-700 hidden">Sin conexión</div>
+      <button id="header-lock" class="badge bg-slate-100 text-slate-600 hover:bg-slate-200 transition hidden" title="Bloquear sesión">🔒 Bloquear</button>
+    </div>
   </div>
   <nav class="max-w-5xl mx-auto px-2 flex gap-1 overflow-x-auto">
     <button data-tab="dashboard" class="tab">Dashboard</button>
@@ -214,6 +217,17 @@
       <button id="import-btn" class="btn-ghost">Importar JSON</button>
       <input type="file" id="import" accept="application/json" hidden>
     </div>
+    <div class="card">
+      <div class="flex items-center gap-2 mb-1">
+        <h2 class="font-semibold">Seguridad</h2>
+        <span id="sec-badge" class="badge bg-slate-100 text-slate-600">Sin contraseña</span>
+      </div>
+      <p class="text-xs text-slate-500 mb-3" id="sec-desc">Los datos se guardan en claro. Activá una contraseña para cifrarlos localmente con AES-GCM.</p>
+      <div id="sec-actions" class="flex flex-wrap gap-2"></div>
+      <p class="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2 mt-3">
+        ⚠️ Sin servidor no hay recuperación. Si perdés la contraseña, se pierden los datos.
+      </p>
+    </div>
     <div class="card border-red-200 bg-red-50/40">
       <h2 class="font-semibold text-red-700">Zona de peligro</h2>
       <p class="text-sm text-slate-600 mt-1 mb-3">Elimina todos los datos locales. No se puede deshacer.</p>
@@ -231,6 +245,35 @@
     <div class="flex justify-end gap-2 mt-4">
       <button value="cancel" class="btn-ghost">Cancelar</button>
       <button value="ok" id="confirm-ok" class="btn-danger" disabled>Borrar</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="lock-dialog" class="rounded-xl p-0 w-[min(92vw,22rem)] shadow-xl border border-slate-200">
+  <form id="lock-form" class="p-5">
+    <div class="flex items-center gap-2 mb-2">
+      <div class="w-9 h-9 rounded-lg bg-primary text-white flex items-center justify-center text-lg">🔒</div>
+      <h3 class="font-semibold text-lg">Datos protegidos</h3>
+    </div>
+    <p class="text-sm text-slate-600 mb-3">Ingresá tu contraseña para desbloquear.</p>
+    <input type="password" id="lock-pass" required autocomplete="current-password" autofocus class="input w-full">
+    <div id="lock-error" class="text-xs text-red-600 mt-2 hidden">Contraseña incorrecta.</div>
+    <div class="flex justify-end gap-2 mt-4">
+      <button type="submit" id="lock-ok" class="btn-primary">Desbloquear</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="pwd-dialog" class="rounded-xl p-0 w-[min(92vw,22rem)] shadow-xl border border-slate-200">
+  <form id="pwd-form" method="dialog" class="p-5">
+    <h3 id="pwd-title" class="font-semibold text-lg">Contraseña</h3>
+    <p id="pwd-desc" class="text-sm text-slate-600 mt-1 mb-3"></p>
+    <input type="password" id="pwd-new" placeholder="Nueva contraseña" minlength="6" required autocomplete="new-password" class="input w-full mb-2">
+    <input type="password" id="pwd-confirm" placeholder="Repetir contraseña" required autocomplete="new-password" class="input w-full">
+    <div id="pwd-error" class="text-xs text-red-600 mt-2 hidden"></div>
+    <div class="flex justify-end gap-2 mt-4">
+      <button value="cancel" class="btn-ghost">Cancelar</button>
+      <button value="ok" id="pwd-ok" class="btn-primary">Confirmar</button>
     </div>
   </form>
 </dialog>
@@ -255,6 +298,11 @@ let state = blank();
 let filters = { q: '', cat: '', from: '', to: '' };
 let activeTab = 'dashboard';
 let catChart = null, trendChart = null;
+
+// Auth session (in-memory only; se pierde al recargar → obliga a re-desbloquear).
+let sessionKey  = null;   // CryptoKey (AES-GCM)
+let sessionSalt = null;   // Uint8Array (PBKDF2 salt)
+let lockedBlob  = null;   // Blob cifrado leído de IDB cuando aún no se desbloqueó
 
 function blank() {
   return { version: 1, expenses: [], debts: [], budgets: { overall: 0, categories: {} } };
@@ -301,6 +349,11 @@ async function loadState() {
   try {
     // 1) IDB (fuente actual)
     const fromIdb = await idbGet();
+    if (fromIdb && fromIdb.encrypted) {
+      // Datos cifrados: postponer hasta desbloquear.
+      lockedBlob = fromIdb;
+      return null;
+    }
     if (fromIdb) return migrate(fromIdb);
 
     // 2) localStorage v1 -> IDB
@@ -355,8 +408,73 @@ function migrate(data) {
 }
 
 function save() {
-  idbSet(state); // fire-and-forget; UI sigue sync
+  persist();  // fire-and-forget; UI sigue sync
   render();
+}
+
+// ---- Cifrado con Web Crypto (AES-GCM + PBKDF2) ----
+const enc = new TextEncoder(), dec = new TextDecoder();
+const b64  = u8 => btoa(String.fromCharCode(...u8));
+const fb64 = s  => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+
+async function deriveKey(pass, salt) {
+  const base = await crypto.subtle.importKey('raw', enc.encode(pass), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: 250000, hash: 'SHA-256' },
+    base,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+}
+
+async function persist() {
+  try {
+    if (sessionKey) {
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, sessionKey, enc.encode(JSON.stringify(state)));
+      await idbSet({ encrypted: true, v: 1, salt: b64(sessionSalt), iv: b64(iv), ct: b64(new Uint8Array(ct)) });
+    } else {
+      await idbSet(state);
+    }
+  } catch (e) {
+    console.error('persist', e);
+    toast('No se pudo guardar.');
+  }
+}
+
+async function unlock(pass) {
+  const salt = fb64(lockedBlob.salt);
+  const iv   = fb64(lockedBlob.iv);
+  const ct   = fb64(lockedBlob.ct);
+  const key  = await deriveKey(pass, salt);
+  const pt   = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
+  const data = migrate(JSON.parse(dec.decode(pt)));
+  sessionKey  = key;
+  sessionSalt = salt;
+  lockedBlob  = null;
+  state = data;
+}
+
+async function setPassword(newPass) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const key  = await deriveKey(newPass, salt);
+  sessionKey  = key;
+  sessionSalt = salt;
+  await persist();
+}
+
+async function removePassword() {
+  sessionKey = null;
+  sessionSalt = null;
+  await persist();
+}
+
+function lockNow() {
+  // ponytail: recargar es la forma más limpia de purgar estado + charts + memory.
+  sessionKey = null;
+  sessionSalt = null;
+  location.reload();
 }
 
 // ============ UTILS ============
@@ -424,6 +542,32 @@ function render() {
   renderExpenses();
   renderDebts();
   renderBudgets();
+  renderSecurity();
+}
+
+function renderSecurity() {
+  const badge = $('#sec-badge');
+  const desc  = $('#sec-desc');
+  const acts  = $('#sec-actions');
+  const headerLock = $('#header-lock');
+  const protectedNow = !!sessionKey;
+  if (protectedNow) {
+    badge.className = 'badge bg-emerald-100 text-emerald-700';
+    badge.textContent = 'Cifrado activo';
+    desc.textContent = 'Tus datos se guardan cifrados en IndexedDB con AES-GCM (clave derivada por PBKDF2).';
+    acts.innerHTML = `
+      <button class="btn-ghost" data-sec="change">Cambiar contraseña</button>
+      <button class="btn-ghost" data-sec="remove">Quitar contraseña</button>
+      <button class="btn-ghost" data-sec="lock">Bloquear ahora</button>
+    `;
+    headerLock.classList.remove('hidden');
+  } else {
+    badge.className = 'badge bg-slate-100 text-slate-600';
+    badge.textContent = 'Sin contraseña';
+    desc.textContent = 'Los datos se guardan en claro. Activá una contraseña para cifrarlos localmente con AES-GCM.';
+    acts.innerHTML = `<button class="btn-primary" data-sec="set">Activar contraseña</button>`;
+    headerLock.classList.add('hidden');
+  }
 }
 
 function renderTabs() {
@@ -897,12 +1041,93 @@ $('#confirm-dialog').addEventListener('close', async () => {
   const dlg = $('#confirm-dialog');
   if (dlg.returnValue === 'ok' && $('#confirm-input').value === 'BORRAR') {
     state = blank();
+    sessionKey = null;
+    sessionSalt = null;
     localStorage.removeItem(KEY);
     localStorage.removeItem('expenses');
     localStorage.removeItem('debts');
     await idbSet(state);
     render();
     toast('Datos borrados');
+  }
+});
+
+// ---- Security wiring ----
+$('#header-lock').addEventListener('click', lockNow);
+
+$('#sec-actions').addEventListener('click', async e => {
+  const action = e.target.dataset.sec;
+  if (!action) return;
+  if (action === 'lock') return lockNow();
+  if (action === 'remove') {
+    if (!confirm('¿Quitar la contraseña? Los datos volverán a guardarse en claro.')) return;
+    await removePassword();
+    render();
+    toast('Contraseña quitada');
+    return;
+  }
+  // set / change: mismo diálogo, distinto label
+  openPwdDialog(action);
+});
+
+function openPwdDialog(mode) {
+  const dlg = $('#pwd-dialog');
+  $('#pwd-title').textContent  = mode === 'set' ? 'Activar contraseña' : 'Cambiar contraseña';
+  $('#pwd-desc').textContent   = mode === 'set'
+    ? 'Elegí una contraseña. Sin ella nadie podrá abrir tus datos — y no hay forma de recuperarlos si la olvidás.'
+    : 'Elegí una nueva contraseña. La anterior queda inválida.';
+  $('#pwd-new').value = '';
+  $('#pwd-confirm').value = '';
+  $('#pwd-error').classList.add('hidden');
+  dlg.dataset.mode = mode;
+  dlg.showModal();
+  setTimeout(() => $('#pwd-new').focus(), 30);
+}
+
+$('#pwd-form').addEventListener('submit', async e => {
+  const dlg = $('#pwd-dialog');
+  const btn = e.submitter;
+  if (btn && btn.value === 'cancel') return; // dialog cierra solo con method="dialog"
+  e.preventDefault();
+  const p1 = $('#pwd-new').value, p2 = $('#pwd-confirm').value;
+  const errEl = $('#pwd-error');
+  if (p1.length < 6) { errEl.textContent = 'Mínimo 6 caracteres.'; errEl.classList.remove('hidden'); return; }
+  if (p1 !== p2)     { errEl.textContent = 'Las contraseñas no coinciden.'; errEl.classList.remove('hidden'); return; }
+  try {
+    await setPassword(p1);
+    dlg.close();
+    render();
+    toast(dlg.dataset.mode === 'set' ? 'Contraseña activada' : 'Contraseña actualizada');
+  } catch (err) {
+    console.error(err);
+    errEl.textContent = 'Error al cifrar.';
+    errEl.classList.remove('hidden');
+  }
+});
+
+// Lock screen
+$('#lock-dialog').addEventListener('cancel', e => e.preventDefault()); // no cerrar con Esc
+$('#lock-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const pass = $('#lock-pass').value;
+  const errEl = $('#lock-error');
+  const okBtn = $('#lock-ok');
+  okBtn.disabled = true;
+  okBtn.textContent = 'Desbloqueando…';
+  try {
+    await unlock(pass);
+    errEl.classList.add('hidden');
+    $('#lock-dialog').close();
+    $('#lock-pass').value = '';
+    render();
+    updateStorageNote();
+  } catch {
+    errEl.classList.remove('hidden');
+    $('#lock-pass').value = '';
+    $('#lock-pass').focus();
+  } finally {
+    okBtn.disabled = false;
+    okBtn.textContent = 'Desbloquear';
   }
 });
 
@@ -943,9 +1168,15 @@ async function updateStorageNote() {
 render();
 
 (async () => {
-  state = await loadState();
-  render();
-  updateStorageNote();
+  const loaded = await loadState();
+  if (loaded === null) {
+    // Datos cifrados: mostrar lock y esperar unlock; el submit del form re-renderiza.
+    $('#lock-dialog').showModal();
+  } else {
+    state = loaded;
+    render();
+    updateStorageNote();
+  }
 })();
 
 window.addEventListener('load', () => {
