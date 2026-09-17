@@ -1,0 +1,1055 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#2563EB">
+<meta name="description" content="Gastos, deudas y presupuestos personales. API + SQLite.">
+<title>Finanzas</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js" defer></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          ink: '#0F172A',
+          primary: '#2563EB',
+          surface: '#F8FAFC',
+        },
+        fontFamily: {
+          sans: ['Inter', 'system-ui', 'sans-serif'],
+        },
+      },
+    },
+  };
+</script>
+<style type="text/tailwindcss">
+  @layer base {
+    body { @apply font-sans bg-surface text-ink antialiased; }
+  }
+  @layer components {
+    .input {
+      @apply border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white
+             focus:outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary transition;
+    }
+    .btn-primary {
+      @apply inline-flex items-center justify-center gap-1.5 bg-primary text-white
+             rounded-lg px-4 py-2 text-sm font-medium hover:bg-blue-700
+             active:scale-[.98] transition disabled:opacity-50 disabled:cursor-not-allowed;
+    }
+    .btn-ghost {
+      @apply inline-flex items-center justify-center gap-1.5 bg-white border border-slate-200
+             text-slate-700 rounded-lg px-3 py-2 text-sm hover:bg-slate-50 active:scale-[.98] transition;
+    }
+    .btn-danger {
+      @apply inline-flex items-center justify-center gap-1.5 bg-red-600 text-white
+             rounded-lg px-4 py-2 text-sm font-medium hover:bg-red-700 active:scale-[.98]
+             transition disabled:opacity-50 disabled:cursor-not-allowed;
+    }
+    .card { @apply bg-white rounded-xl border border-slate-200 shadow-sm p-4; }
+    .tab { @apply shrink-0 px-3 py-3 text-sm border-b-2 border-transparent text-slate-500 hover:text-ink transition; }
+    .tab-active { @apply text-ink border-primary font-medium; }
+    .kpi-label { @apply text-[11px] text-slate-500 uppercase tracking-wide font-medium; }
+    .badge { @apply inline-block px-2 py-0.5 rounded text-[11px] font-medium; }
+  }
+  dialog::backdrop { background: rgba(15, 23, 42, .55); backdrop-filter: blur(2px); }
+  dialog[open] { animation: pop .15s ease-out; }
+  @keyframes pop { from { opacity: 0; transform: translateY(6px) scale(.98); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+
+<header class="bg-white border-b border-slate-200 sticky top-0 z-20">
+  <div class="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
+    <div class="flex items-center gap-2.5">
+      <div class="w-9 h-9 rounded-lg bg-primary text-white flex items-center justify-center font-bold text-lg">₲</div>
+      <div>
+        <h1 class="text-base font-semibold leading-tight">Finanzas</h1>
+        <div class="text-[11px] text-slate-500 leading-tight" id="today"></div>
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      <div id="offline-badge" class="badge bg-amber-100 text-amber-700 hidden">Sin conexión</div>
+      <button id="header-lock" class="badge bg-slate-100 text-slate-600 hover:bg-slate-200 transition hidden" title="Cerrar sesión">🔓 Salir</button>
+    </div>
+  </div>
+  <nav class="max-w-5xl mx-auto px-2 flex gap-1 overflow-x-auto">
+    <button data-tab="dashboard" class="tab">Dashboard</button>
+    <button data-tab="expenses" class="tab">Gastos</button>
+    <button data-tab="debts" class="tab">Deudas</button>
+    <button data-tab="budgets" class="tab">Presupuestos</button>
+    <button data-tab="backup" class="tab">Respaldo</button>
+  </nav>
+</header>
+
+<main class="max-w-5xl mx-auto px-4 py-5 pb-16">
+
+  <!-- DASHBOARD -->
+  <section id="dashboard" class="tab-content space-y-4">
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <div class="card">
+        <div class="kpi-label">Gasto del mes</div>
+        <div class="mt-1 text-2xl font-semibold" id="kpi-month">0 ₲</div>
+        <div class="mt-1 text-xs text-slate-500" id="kpi-delta">vs mes anterior</div>
+      </div>
+      <div class="card">
+        <div class="kpi-label">Promedio diario</div>
+        <div class="mt-1 text-2xl font-semibold" id="kpi-avg">0 ₲</div>
+        <div class="mt-1 text-xs text-slate-500" id="kpi-proj">proyección: 0 ₲</div>
+      </div>
+      <div class="card">
+        <div class="kpi-label">Deuda pendiente</div>
+        <div class="mt-1 text-2xl font-semibold" id="kpi-debt">0 ₲</div>
+        <div class="mt-1 text-xs text-slate-500" id="kpi-debt-count">0 activas</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="flex justify-between items-baseline mb-2">
+        <h2 class="font-semibold">Presupuesto del mes</h2>
+        <span id="budget-status" class="text-xs text-slate-500"></span>
+      </div>
+      <div class="h-3 bg-slate-100 rounded-full overflow-hidden">
+        <div id="budget-bar" class="h-full transition-all duration-300" style="width:0%"></div>
+      </div>
+      <div class="mt-2 text-xs text-slate-500 flex justify-between">
+        <span id="budget-used">0 ₲</span>
+        <span id="budget-limit">sin objetivo</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 class="font-semibold mb-3">Tendencia · últimos 6 meses</h2>
+      <div class="relative h-56"><canvas id="trend-chart"></canvas></div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="card">
+        <h2 class="font-semibold mb-3">Distribución por categoría</h2>
+        <div id="chart-empty" class="hidden"></div>
+        <div class="relative h-64"><canvas id="cat-chart"></canvas></div>
+      </div>
+      <div class="card">
+        <h2 class="font-semibold mb-3">Próximos vencimientos</h2>
+        <div id="upcoming"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- EXPENSES -->
+  <section id="expenses" class="tab-content hidden space-y-4">
+    <div class="card">
+      <h2 class="font-semibold mb-3">Nuevo gasto</h2>
+      <form id="expense-form" class="grid grid-cols-2 md:grid-cols-6 gap-2">
+        <input type="date" name="date" required class="input col-span-1 md:col-span-1" aria-label="Fecha">
+        <input type="text" name="desc" placeholder="Descripción" required class="input col-span-2 md:col-span-2" maxlength="80">
+        <select name="category" class="input col-span-1 md:col-span-1" aria-label="Categoría"></select>
+        <input type="number" name="amount" placeholder="Monto (₲)" min="1" step="1" required inputmode="numeric" class="input col-span-1 md:col-span-1">
+        <button class="btn-primary col-span-2 md:col-span-1">Agregar</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+        <input type="search" id="q" placeholder="Buscar por descripción o categoría" class="input col-span-2">
+        <select id="f-cat" class="input"></select>
+        <div class="grid grid-cols-2 gap-2 col-span-2 md:col-span-1">
+          <input type="date" id="f-from" class="input" title="Desde">
+          <input type="date" id="f-to" class="input" title="Hasta">
+        </div>
+      </div>
+      <div id="expense-list"></div>
+    </div>
+  </section>
+
+  <!-- DEBTS -->
+  <section id="debts" class="tab-content hidden space-y-4">
+    <div class="card">
+      <h2 class="font-semibold mb-3">Nueva deuda</h2>
+      <form id="debt-form" class="grid grid-cols-2 md:grid-cols-6 gap-2">
+        <input type="text" name="creditor" placeholder="Acreedor" required class="input col-span-2 md:col-span-2" maxlength="60">
+        <input type="number" name="amount" placeholder="Monto total (₲)" min="1" step="1" required inputmode="numeric" class="input col-span-1 md:col-span-1">
+        <input type="date" name="due" required class="input col-span-1 md:col-span-1" aria-label="Vencimiento">
+        <input type="text" name="installments" placeholder="Cuota (ej: 3/10)" class="input col-span-1 md:col-span-1" maxlength="12">
+        <button class="btn-primary col-span-2 md:col-span-1">Agregar</button>
+      </form>
+    </div>
+    <div id="debt-list" class="space-y-3"></div>
+  </section>
+
+  <!-- BUDGETS -->
+  <section id="budgets" class="tab-content hidden space-y-4">
+    <div class="card">
+      <h2 class="font-semibold mb-2">Objetivo mensual general</h2>
+      <p class="text-xs text-slate-500 mb-3">Total de gasto que no querés superar en el mes.</p>
+      <div class="flex gap-2">
+        <input type="number" id="budget-overall" min="0" step="1" inputmode="numeric" class="input flex-1" placeholder="Ej: 3000000">
+        <button id="budget-overall-save" class="btn-primary">Guardar</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2 class="font-semibold mb-1">Límites por categoría</h2>
+      <p class="text-xs text-slate-500 mb-3">Dejá en blanco (o 0) para quitar el límite.</p>
+      <div id="budget-cats" class="space-y-3"></div>
+    </div>
+  </section>
+
+  <!-- BACKUP -->
+  <section id="backup" class="tab-content hidden space-y-4">
+    <div class="card">
+      <h2 class="font-semibold mb-1">Exportar</h2>
+      <p class="text-xs text-slate-500 mb-3">JSON para respaldo completo. CSV para llevar a Excel/Sheets.</p>
+      <div class="flex flex-wrap gap-2">
+        <button id="export-json" class="btn-ghost">Exportar JSON</button>
+        <button id="export-csv" class="btn-ghost">Exportar CSV del mes</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2 class="font-semibold mb-1">Importar</h2>
+      <p class="text-xs text-slate-500 mb-3">Reemplaza todos los datos actuales con los del archivo.</p>
+      <button id="import-btn" class="btn-ghost">Importar JSON</button>
+      <input type="file" id="import" accept="application/json" hidden>
+    </div>
+    <div class="card">
+      <div class="flex items-center gap-2 mb-1">
+        <h2 class="font-semibold">Sesión</h2>
+        <span id="sec-badge" class="badge bg-slate-100 text-slate-600">Sin sesión</span>
+      </div>
+      <p class="text-xs text-slate-500 mb-3">Los datos viven en la base del servidor. Cerrá sesión para bloquear el acceso desde este dispositivo.</p>
+      <div class="flex flex-wrap gap-2">
+        <button id="btn-logout" class="btn-ghost">Cerrar sesión</button>
+      </div>
+    </div>
+    <div class="card border-red-200 bg-red-50/40">
+      <h2 class="font-semibold text-red-700">Zona de peligro</h2>
+      <p class="text-sm text-slate-600 mt-1 mb-3">Elimina todos los datos locales. No se puede deshacer.</p>
+      <button id="wipe" class="btn-danger">Borrar todos los datos</button>
+    </div>
+  </section>
+</main>
+
+<dialog id="confirm-dialog" class="rounded-xl p-0 w-[min(92vw,22rem)] shadow-xl border border-slate-200">
+  <form method="dialog" class="p-5">
+    <h3 class="font-semibold text-lg">Borrar todos los datos</h3>
+    <p class="text-sm text-slate-600 mt-2">Escribí <b class="font-mono">BORRAR</b> para confirmar.</p>
+    <input type="text" id="confirm-input" class="input w-full mt-3" placeholder="BORRAR" autocomplete="off" autocapitalize="characters">
+    <div class="flex justify-end gap-2 mt-4">
+      <button value="cancel" class="btn-ghost">Cancelar</button>
+      <button value="ok" id="confirm-ok" class="btn-danger" disabled>Borrar</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="edit-expense-dialog" class="rounded-xl p-0 w-[min(92vw,26rem)] shadow-xl border border-slate-200">
+  <form id="edit-expense-form" class="p-5">
+    <h3 class="font-semibold text-lg mb-3">Editar gasto</h3>
+    <div class="grid grid-cols-2 gap-2">
+      <input type="date"   name="date"     required class="input col-span-1" aria-label="Fecha">
+      <input type="number" name="amount"   required min="1" step="1" inputmode="numeric" class="input col-span-1" placeholder="Monto (₲)">
+      <input type="text"   name="desc"     required maxlength="80" class="input col-span-2" placeholder="Descripción">
+      <select              name="category" class="input col-span-2" aria-label="Categoría"></select>
+    </div>
+    <div id="edit-expense-error" class="text-xs text-red-600 mt-2 hidden"></div>
+    <div class="flex justify-end gap-2 mt-4">
+      <button type="button" data-cancel class="btn-ghost">Cancelar</button>
+      <button type="submit" class="btn-primary">Guardar</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="edit-debt-dialog" class="rounded-xl p-0 w-[min(92vw,26rem)] shadow-xl border border-slate-200">
+  <form id="edit-debt-form" class="p-5">
+    <h3 class="font-semibold text-lg mb-3">Editar deuda</h3>
+    <div class="grid grid-cols-2 gap-2">
+      <input type="text"   name="creditor"     required maxlength="60" class="input col-span-2" placeholder="Acreedor">
+      <input type="number" name="amount"       required min="1" step="1" inputmode="numeric" class="input col-span-1" placeholder="Monto total (₲)">
+      <input type="date"   name="due"          required class="input col-span-1" aria-label="Vencimiento">
+      <input type="text"   name="installments" maxlength="12" class="input col-span-2" placeholder="Cuota (ej: 3/10)">
+    </div>
+    <div id="edit-debt-error" class="text-xs text-red-600 mt-2 hidden"></div>
+    <div class="flex justify-end gap-2 mt-4">
+      <button type="button" data-cancel class="btn-ghost">Cancelar</button>
+      <button type="submit" class="btn-primary">Guardar</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="edit-payment-dialog" class="rounded-xl p-0 w-[min(92vw,22rem)] shadow-xl border border-slate-200">
+  <form id="edit-payment-form" class="p-5">
+    <h3 class="font-semibold text-lg mb-3">Editar pago</h3>
+    <div class="grid grid-cols-2 gap-2">
+      <input type="date"   name="date"   required class="input col-span-1" aria-label="Fecha">
+      <input type="number" name="amount" required min="1" step="1" inputmode="numeric" class="input col-span-1" placeholder="Monto (₲)">
+    </div>
+    <div id="edit-payment-error" class="text-xs text-red-600 mt-2 hidden"></div>
+    <div class="flex justify-end gap-2 mt-4">
+      <button type="button" data-cancel class="btn-ghost">Cancelar</button>
+      <button type="submit" class="btn-primary">Guardar</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="lock-dialog" class="rounded-xl p-0 w-[min(92vw,22rem)] shadow-xl border border-slate-200">
+  <form id="lock-form" class="p-5">
+    <div class="flex items-center gap-2 mb-2">
+      <div class="w-9 h-9 rounded-lg bg-primary text-white flex items-center justify-center text-lg">🔒</div>
+      <h3 class="font-semibold text-lg">Iniciar sesión</h3>
+    </div>
+    <input type="text" id="lock-user" required autocomplete="username" placeholder="Usuario" autofocus class="input w-full mb-2">
+    <input type="password" id="lock-pass" required autocomplete="current-password" placeholder="Contraseña" class="input w-full">
+    <div id="lock-error" class="text-xs text-red-600 mt-2 hidden">Credenciales inválidas.</div>
+    <div class="flex justify-end gap-2 mt-4">
+      <button type="submit" id="lock-ok" class="btn-primary">Entrar</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 bg-ink text-white text-sm px-4 py-2 rounded-lg shadow-lg opacity-0 pointer-events-none transition-opacity duration-200 z-30"></div>
+
+<script>
+// ============ Config de display (íconos/colores; el backend define las categorías válidas) ============
+const CAT_META = {
+  Comida:     { icon: '🍽️', color: '#f59e0b' },
+  Transporte: { icon: '🚗', color: '#3b82f6' },
+  Servicios:  { icon: '💡', color: '#8b5cf6' },
+  Vivienda:   { icon: '🏠', color: '#10b981' },
+  Salud:      { icon: '⚕️', color: '#ef4444' },
+  Ocio:       { icon: '🎬', color: '#ec4899' },
+  Otro:       { icon: '📦', color: '#6b7280' },
+};
+const metaOf = c => CAT_META[c] || CAT_META.Otro;
+
+let view = null;                 // último payload de /api/view
+let filters = { q: '', cat: '', from: '', to: '' };
+let activeTab = 'dashboard';
+let catChart = null, trendChart = null;
+
+// ============ Auth + API ============
+const TOKEN_KEY = 'finapp.token';
+const USER_KEY  = 'finapp.user';
+const getToken = () => localStorage.getItem(TOKEN_KEY);
+const getUser  = () => localStorage.getItem(USER_KEY);
+function setSession(token, user) {
+  if (token) { localStorage.setItem(TOKEN_KEY, token); localStorage.setItem(USER_KEY, user); }
+  else       { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(USER_KEY); }
+}
+
+function filterQs() {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(filters)) if (v) p.set(k, v);
+  const s = p.toString();
+  return s ? '?' + s : '';
+}
+
+async function api(path, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  if (opts.body) headers['content-type'] = 'application/json';
+  const t = getToken();
+  if (t) headers.authorization = `Bearer ${t}`;
+  const r = await fetch(path, { ...opts, headers });
+  if (r.status === 401) { setSession(null); showLogin(); throw new Error('unauthorized'); }
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { const j = await r.json(); if (j && j.error) msg = j.error; } catch {}
+    throw new Error(msg);
+  }
+  return r.status === 204 ? null : r.json();
+}
+
+async function login(username, password) {
+  const r = await fetch('/api/login', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!r.ok) throw new Error('invalid');
+  const { token, username: u } = await r.json();
+  setSession(token, u);
+}
+
+function logout() { setSession(null); location.reload(); }
+
+async function reload() {
+  try {
+    const v = await api('/api/view' + filterQs());
+    view = v;
+    render();
+  } catch (e) {
+    if (e.message !== 'unauthorized') toast('No se pudo cargar. ' + e.message);
+  }
+}
+
+// ponytail: mutaciones esperan la vista fresca del backend en el mismo response.
+async function mutate(path, opts) {
+  try {
+    const v = await api(path + filterQs(), opts);
+    if (v) { view = v; render(); }
+    return true;
+  } catch (e) {
+    if (e.message !== 'unauthorized') toast(e.message);
+    return false;
+  }
+}
+
+function showLogin() {
+  const dlg = $('#lock-dialog');
+  if (!dlg.open) dlg.showModal();
+}
+
+// ============ Utils de display ============
+const $  = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+const fmt = n => (Math.round(+n || 0)).toLocaleString('es-PY') + ' ₲';
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function toast(msg, ms = 2200) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.style.opacity = '1';
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { t.style.opacity = '0'; }, ms);
+}
+
+function emptyState(icon, title, sub) {
+  return `<div class="text-center py-8">
+    <div class="text-4xl mb-2 opacity-60">${icon}</div>
+    <div class="font-medium text-slate-700">${esc(title)}</div>
+    <div class="text-sm text-slate-500 mt-1">${esc(sub)}</div>
+  </div>`;
+}
+
+function download(content, name, type) {
+  const blob = new Blob([content], { type });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+const STATUS_CLS = {
+  paid:    'bg-emerald-100 text-emerald-700',
+  overdue: 'bg-red-100 text-red-700',
+  urgent:  'bg-amber-100 text-amber-700',
+  soon:    'bg-amber-100 text-amber-700',
+  ok:      'bg-emerald-100 text-emerald-700',
+};
+const BUDGET_BAR_CLS = {
+  none:     'bg-slate-300',
+  ok:       'bg-primary',
+  warn:     'bg-amber-500',
+  exceeded: 'bg-red-500',
+};
+const BUDGET_STATUS_TXT = {
+  exceeded: 'text-xs text-red-600 font-medium',
+  warn:     'text-xs text-amber-600 font-medium',
+};
+
+// ============ Render (lee sólo de `view`) ============
+function render() {
+  renderTabs();
+  renderSession();
+  if (!view) return;
+  renderDashboard();
+  renderExpenses();
+  renderDebts();
+  renderBudgets();
+}
+
+function renderTabs() {
+  $$('.tab').forEach(b => b.classList.toggle('tab-active', b.dataset.tab === activeTab));
+  $$('.tab-content').forEach(s => s.classList.toggle('hidden', s.id !== activeTab));
+}
+
+function renderSession() {
+  const badge = $('#sec-badge');
+  const headerLock = $('#header-lock');
+  const user = getUser();
+  if (user) {
+    badge.className = 'badge bg-emerald-100 text-emerald-700';
+    badge.textContent = `Sesión: ${user}`;
+    headerLock.classList.remove('hidden');
+  } else {
+    badge.className = 'badge bg-slate-100 text-slate-600';
+    badge.textContent = 'Sin sesión';
+    headerLock.classList.add('hidden');
+  }
+}
+
+function renderDashboard() {
+  const d = view.dashboard;
+  $('#kpi-month').textContent = fmt(d.monthSum);
+  const deltaEl = $('#kpi-delta');
+  deltaEl.textContent = d.delta.pct === null ? d.delta.label : `${d.delta.label} (${fmt(d.delta.prevSum)})`;
+  deltaEl.className = 'mt-1 text-xs ' + (
+    d.delta.pct === null ? 'text-slate-500' :
+    d.delta.pct > 0 ? 'text-red-600' :
+    d.delta.pct < 0 ? 'text-emerald-600' : 'text-slate-500'
+  );
+  $('#kpi-avg').textContent  = fmt(d.avg);
+  $('#kpi-proj').textContent = `Proyección fin de mes: ${fmt(d.projection)}`;
+  $('#kpi-debt').textContent = fmt(d.debtTotal);
+  $('#kpi-debt-count').textContent = `${d.debtCount} activa${d.debtCount === 1 ? '' : 's'}`;
+
+  const b = d.budget;
+  const bar = $('#budget-bar');
+  bar.style.width = (b.pctUsed || 0) + '%';
+  bar.className = 'h-full transition-all duration-300 ' + (BUDGET_BAR_CLS[b.status.level] || 'bg-slate-300');
+  $('#budget-used').textContent  = fmt(b.used);
+  $('#budget-limit').textContent = b.overall > 0 ? `de ${fmt(b.overall)}` : 'sin objetivo definido';
+  const status = $('#budget-status');
+  status.textContent = b.status.level === 'none' ? 'Definí un objetivo en Presupuestos' : b.status.label;
+  status.className   = BUDGET_STATUS_TXT[b.status.level] || 'text-xs text-slate-500';
+
+  renderCategoryChart(d.categoryChart);
+  renderTrendChart(d.trend);
+  renderUpcoming(d.upcoming);
+}
+
+function renderUpcoming(items) {
+  const el = $('#upcoming');
+  if (!items.length) {
+    el.innerHTML = emptyState('✅', 'Sin deudas activas', 'Cuando agregues alguna aparecerá acá.');
+    return;
+  }
+  el.innerHTML = items.map(d => `
+    <div class="flex items-center justify-between py-2 border-b border-slate-100 last:border-0">
+      <div class="min-w-0">
+        <div class="font-medium truncate">${esc(d.creditor)}</div>
+        <div class="text-xs text-slate-500">${d.due}${d.installments ? ' · ' + esc(d.installments) : ''}</div>
+      </div>
+      <div class="text-right shrink-0 ml-3">
+        <div class="text-sm font-semibold">${fmt(d.remaining)}</div>
+        <span class="badge ${STATUS_CLS[d.status.level] || ''} mt-0.5">${esc(d.status.label)}</span>
+      </div>
+    </div>
+  `).join('');
+}
+
+function renderCategoryChart(entries) {
+  const emptyEl = $('#chart-empty');
+  const canvas  = $('#cat-chart');
+  if (!entries.length) {
+    canvas.style.display = 'none';
+    emptyEl.classList.remove('hidden');
+    emptyEl.innerHTML = emptyState('📊', 'Sin gastos este mes', 'Registrá el primero para ver el desglose.');
+    if (catChart) { catChart.destroy(); catChart = null; }
+    return;
+  }
+  canvas.style.display = '';
+  emptyEl.classList.add('hidden');
+  if (typeof Chart === 'undefined') return; // Chart.js con defer: siguiente render lo dibuja
+
+  const labels = entries.map(e => `${metaOf(e.cat).icon} ${e.cat}`);
+  const data   = entries.map(e => e.amount);
+  const colors = entries.map(e => metaOf(e.cat).color);
+
+  if (catChart) {
+    catChart.data.labels = labels;
+    catChart.data.datasets[0].data = data;
+    catChart.data.datasets[0].backgroundColor = colors;
+    catChart.update();
+    return;
+  }
+  catChart = new Chart(canvas, {
+    type: 'doughnut',
+    data: { labels, datasets: [{ data, backgroundColor: colors, borderWidth: 0, hoverOffset: 6 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false, cutout: '62%',
+      plugins: {
+        legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 }, color: '#334155' } },
+        tooltip: {
+          backgroundColor: '#0F172A', padding: 10,
+          callbacks: {
+            label: c => {
+              const total = c.dataset.data.reduce((s, v) => s + v, 0);
+              const p = total ? (c.raw / total) * 100 : 0;
+              return `${c.label}: ${fmt(c.raw)} · ${p.toFixed(0)}%`;
+            },
+          },
+        },
+      },
+    },
+  });
+}
+
+function renderTrendChart(trend) {
+  const canvas = $('#trend-chart');
+  if (typeof Chart === 'undefined') return;
+  const labels = trend.map(t => t.label);
+  const data   = trend.map(t => t.value);
+  if (trendChart) {
+    trendChart.data.labels = labels;
+    trendChart.data.datasets[0].data = data;
+    trendChart.update();
+    return;
+  }
+  trendChart = new Chart(canvas, {
+    type: 'bar',
+    data: { labels, datasets: [{ data, backgroundColor: '#2563EB', borderRadius: 6, maxBarThickness: 44 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { backgroundColor: '#0F172A', padding: 10, callbacks: { label: c => fmt(c.raw) } },
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: '#64748b', font: { size: 11 } } },
+        y: {
+          beginAtZero: true, grid: { color: '#f1f5f9' },
+          ticks: {
+            color: '#64748b', font: { size: 10 },
+            callback: v => v >= 1000000 ? (v / 1000000).toFixed(1) + 'M'
+                          : v >= 1000    ? (v / 1000).toFixed(0)    + 'k'
+                          : v,
+          },
+        },
+      },
+    },
+  });
+}
+
+function renderExpenses() {
+  const list = $('#expense-list');
+  const { groups, totalCount, filteredCount } = view.expenses;
+  if (!filteredCount) {
+    list.innerHTML = totalCount
+      ? emptyState('🔎', 'Sin resultados', 'Probá con otros filtros.')
+      : emptyState('📭', 'Sin gastos aún', 'Agregá el primero desde el formulario de arriba.');
+    return;
+  }
+  list.innerHTML = groups.map(g => `
+    <div class="mt-4 first:mt-0">
+      <div class="flex justify-between items-baseline mb-1.5 text-xs uppercase tracking-wide text-slate-500 font-medium">
+        <span>${g.month}</span><span>${fmt(g.sum)}</span>
+      </div>
+      <div class="border border-slate-200 rounded-xl overflow-hidden bg-white">
+        ${g.items.map(e => {
+          const meta = metaOf(e.category);
+          return `
+            <div class="flex items-center gap-3 p-3 border-b border-slate-100 last:border-0 hover:bg-slate-50 transition">
+              <div class="w-9 h-9 rounded-lg flex items-center justify-center text-lg shrink-0" style="background:${meta.color}22" title="${esc(e.category)}">${meta.icon}</div>
+              <div class="flex-1 min-w-0">
+                <div class="font-medium truncate">${esc(e.desc)}</div>
+                <div class="text-xs text-slate-500">${e.date} · ${esc(e.category)}</div>
+              </div>
+              <div class="font-semibold text-sm">${fmt(e.amount)}</div>
+              <button class="text-slate-300 hover:text-primary p-1 -m-1 transition" data-edit-expense="${esc(e.id)}" title="Editar" aria-label="Editar gasto">✎</button>
+              <button class="text-slate-300 hover:text-red-600 p-1 -m-1 transition" data-del-expense="${esc(e.id)}" title="Borrar" aria-label="Borrar gasto">✕</button>
+            </div>`;
+        }).join('')}
+      </div>
+    </div>
+  `).join('');
+}
+
+function renderDebts() {
+  const list = $('#debt-list');
+  if (!view.debts.length) {
+    list.innerHTML = emptyState('💳', 'Sin deudas', 'Agregá una obligación para hacer seguimiento.');
+    return;
+  }
+  list.innerHTML = view.debts.map(d => `
+    <div class="card">
+      <div class="flex justify-between items-start gap-3">
+        <div class="min-w-0">
+          <div class="font-semibold truncate">${esc(d.creditor)}</div>
+          <div class="text-xs text-slate-500 mt-0.5">Vence ${d.due}${d.installments ? ' · Cuota ' + esc(d.installments) : ''}</div>
+        </div>
+        <div class="text-right shrink-0">
+          <div class="text-lg font-semibold">${fmt(d.remaining)}</div>
+          <div class="text-[11px] text-slate-500">de ${fmt(d.amount)}</div>
+          <span class="badge ${STATUS_CLS[d.status.level] || ''} mt-1">${esc(d.status.label)}</span>
+        </div>
+      </div>
+
+      <div class="mt-3 h-2 bg-slate-100 rounded overflow-hidden">
+        <div class="h-full bg-primary transition-all duration-500" style="width:${d.pctPaid}%"></div>
+      </div>
+      <div class="mt-1 text-[11px] text-slate-500 flex justify-between">
+        <span>Pagado ${fmt(d.paid)}</span><span>${d.pctPaid.toFixed(0)}%</span>
+      </div>
+
+      ${d.remaining > 0 ? `
+        <form class="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2" data-pay-debt="${esc(d.id)}">
+          <input type="number" name="amount" placeholder="Abonar (₲)" min="1" max="${d.remaining}" step="1" required inputmode="numeric" class="input col-span-1 md:col-span-2">
+          <input type="date" name="date" value="${view.today}" required class="input col-span-1">
+          <button class="btn-primary col-span-2 md:col-span-1">Registrar pago</button>
+        </form>` : ''}
+
+      ${d.payments.length ? `
+        <details class="mt-3">
+          <summary class="text-xs text-slate-500 cursor-pointer select-none hover:text-ink">Historial de pagos (${d.payments.length})</summary>
+          <ul class="mt-2 text-sm divide-y divide-slate-100 border-t border-slate-100 pt-1">
+            ${d.payments.map(p => `
+              <li class="flex justify-between items-center py-1.5">
+                <span class="text-slate-600">${p.date}</span>
+                <span class="flex items-center gap-3">
+                  <span class="font-medium">${fmt(p.amount)}</span>
+                  <button class="text-slate-300 hover:text-primary transition" data-edit-payment="${esc(d.id)}:${p.id}" title="Editar pago" aria-label="Editar pago">✎</button>
+                  <button class="text-slate-300 hover:text-red-600 transition" data-del-payment="${esc(d.id)}:${p.id}" title="Borrar pago" aria-label="Borrar pago">✕</button>
+                </span>
+              </li>`).join('')}
+          </ul>
+        </details>` : ''}
+
+      <div class="mt-3 text-right space-x-3">
+        <button class="text-xs text-slate-500 hover:text-primary transition" data-edit-debt="${esc(d.id)}">Editar deuda</button>
+        <button class="text-xs text-slate-400 hover:text-red-600 transition" data-del-debt="${esc(d.id)}">Borrar deuda</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function renderBudgets() {
+  $('#budget-overall').value = view.budgets.overall || '';
+  $('#budget-cats').innerHTML = view.budgets.categories.map(b => {
+    const meta = metaOf(b.cat);
+    const warn = b.level === 'exceeded'
+      ? `<span class="badge bg-red-100 text-red-700 ml-2">Superado</span>`
+      : b.level === 'warn'
+        ? `<span class="badge bg-amber-100 text-amber-700 ml-2">Cerca</span>`
+        : '';
+    return `
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-lg flex items-center justify-center text-lg shrink-0" style="background:${meta.color}22">${meta.icon}</div>
+        <div class="flex-1 min-w-0">
+          <div class="flex justify-between items-center text-sm">
+            <span>${b.cat}${warn}</span>
+            <span class="text-slate-500 text-xs">${fmt(b.used)}${b.limit > 0 ? ' / ' + fmt(b.limit) : ''}</span>
+          </div>
+          <div class="mt-1 h-1.5 bg-slate-100 rounded overflow-hidden">
+            <div class="h-full ${BUDGET_BAR_CLS[b.level] || 'bg-slate-300'} transition-all duration-500" style="width:${b.pct}%"></div>
+          </div>
+        </div>
+        <input type="number" min="0" step="1" inputmode="numeric" value="${b.limit || ''}" placeholder="Tope" data-budget-cat="${b.cat}" class="input w-28 text-right" aria-label="Tope para ${b.cat}">
+      </div>`;
+  }).join('');
+}
+
+// ============ Events ============
+$$('.tab').forEach(b => b.addEventListener('click', () => { activeTab = b.dataset.tab; render(); }));
+
+$('#expense-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const ok = await mutate('/api/expenses', {
+    method: 'POST',
+    body: JSON.stringify({
+      date: f.get('date'),
+      desc: (f.get('desc') || '').trim(),
+      category: f.get('category'),
+      amount: +f.get('amount'),
+    }),
+  });
+  if (ok) { e.target.reset(); e.target.date.value = view.today; toast('Gasto agregado'); }
+});
+
+$('#debt-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const ok = await mutate('/api/debts', {
+    method: 'POST',
+    body: JSON.stringify({
+      creditor: (f.get('creditor') || '').trim(),
+      amount: +f.get('amount'),
+      due: f.get('due'),
+      installments: (f.get('installments') || '').trim() || null,
+    }),
+  });
+  if (ok) { e.target.reset(); toast('Deuda agregada'); }
+});
+
+document.addEventListener('click', async e => {
+  const t = e.target.closest('[data-del-expense],[data-del-debt],[data-del-payment],[data-edit-expense],[data-edit-debt],[data-edit-payment]');
+  if (!t) return;
+  if (t.dataset.delExpense) {
+    if (await mutate(`/api/expenses/${encodeURIComponent(t.dataset.delExpense)}`, { method: 'DELETE' })) toast('Gasto borrado');
+  } else if (t.dataset.delDebt) {
+    if (!confirm('¿Borrar esta deuda y su historial?')) return;
+    if (await mutate(`/api/debts/${encodeURIComponent(t.dataset.delDebt)}`, { method: 'DELETE' })) toast('Deuda borrada');
+  } else if (t.dataset.delPayment) {
+    const [did, pid] = t.dataset.delPayment.split(':');
+    if (await mutate(`/api/debts/${encodeURIComponent(did)}/payments/${encodeURIComponent(pid)}`, { method: 'DELETE' })) toast('Pago borrado');
+  } else if (t.dataset.editExpense) {
+    openEditExpense(t.dataset.editExpense);
+  } else if (t.dataset.editDebt) {
+    openEditDebt(t.dataset.editDebt);
+  } else if (t.dataset.editPayment) {
+    const [did, pid] = t.dataset.editPayment.split(':');
+    openEditPayment(did, pid);
+  }
+});
+
+function findExpense(id) {
+  for (const g of view.expenses.groups) for (const e of g.items) if (e.id === id) return e;
+  return null;
+}
+function findDebt(id) { return view.debts.find(d => d.id === id) || null; }
+
+function openEditExpense(id) {
+  const e = findExpense(id);
+  if (!e) return;
+  const dlg = $('#edit-expense-dialog');
+  const f   = $('#edit-expense-form');
+  // Rellenamos el select con las categorías del server.
+  f.category.innerHTML = view.categories.map(c => `<option value="${c}">${metaOf(c).icon} ${c}</option>`).join('');
+  f.date.value = e.date;
+  f.desc.value = e.desc;
+  f.category.value = e.category;
+  f.amount.value = e.amount;
+  dlg.dataset.id = id;
+  $('#edit-expense-error').classList.add('hidden');
+  dlg.showModal();
+}
+function openEditDebt(id) {
+  const d = findDebt(id);
+  if (!d) return;
+  const dlg = $('#edit-debt-dialog');
+  const f   = $('#edit-debt-form');
+  f.creditor.value     = d.creditor;
+  f.amount.value       = d.amount;
+  f.due.value          = d.due;
+  f.installments.value = d.installments || '';
+  dlg.dataset.id  = id;
+  dlg.dataset.paid = d.paid; // hint para mensaje de error local
+  $('#edit-debt-error').classList.add('hidden');
+  dlg.showModal();
+}
+function openEditPayment(did, pid) {
+  const d = findDebt(did);
+  const p = d && d.payments.find(x => String(x.id) === String(pid));
+  if (!p) return;
+  const dlg = $('#edit-payment-dialog');
+  const f   = $('#edit-payment-form');
+  f.date.value = p.date;
+  f.amount.value = p.amount;
+  dlg.dataset.did = did;
+  dlg.dataset.pid = pid;
+  $('#edit-payment-error').classList.add('hidden');
+  dlg.showModal();
+}
+
+// Cerrar diálogos con botón Cancelar (sin submit).
+document.addEventListener('click', e => {
+  const btn = e.target.closest('dialog [data-cancel]');
+  if (!btn) return;
+  btn.closest('dialog').close();
+});
+
+async function submitEdit(dialogId, path, body, errId, okMsg) {
+  const errEl = $('#' + errId);
+  errEl.classList.add('hidden');
+  try {
+    const v = await api(path, { method: 'PUT', body: JSON.stringify(body) });
+    view = v; render();
+    $('#' + dialogId).close();
+    toast(okMsg);
+  } catch (e) {
+    if (e.message === 'unauthorized') return;
+    errEl.textContent = e.message;
+    errEl.classList.remove('hidden');
+  }
+}
+
+$('#edit-expense-form').addEventListener('submit', e => {
+  e.preventDefault();
+  const dlg = $('#edit-expense-dialog');
+  const f = new FormData(e.target);
+  submitEdit('edit-expense-dialog', `/api/expenses/${encodeURIComponent(dlg.dataset.id)}` + filterQs(), {
+    date: f.get('date'),
+    desc: (f.get('desc') || '').trim(),
+    category: f.get('category'),
+    amount: +f.get('amount'),
+  }, 'edit-expense-error', 'Gasto actualizado');
+});
+
+$('#edit-debt-form').addEventListener('submit', e => {
+  e.preventDefault();
+  const dlg = $('#edit-debt-dialog');
+  const f = new FormData(e.target);
+  submitEdit('edit-debt-dialog', `/api/debts/${encodeURIComponent(dlg.dataset.id)}` + filterQs(), {
+    creditor: (f.get('creditor') || '').trim(),
+    amount: +f.get('amount'),
+    due: f.get('due'),
+    installments: (f.get('installments') || '').trim() || null,
+  }, 'edit-debt-error', 'Deuda actualizada');
+});
+
+$('#edit-payment-form').addEventListener('submit', e => {
+  e.preventDefault();
+  const dlg = $('#edit-payment-dialog');
+  const f = new FormData(e.target);
+  submitEdit('edit-payment-dialog',
+    `/api/debts/${encodeURIComponent(dlg.dataset.did)}/payments/${encodeURIComponent(dlg.dataset.pid)}` + filterQs(),
+    { date: f.get('date'), amount: +f.get('amount') },
+    'edit-payment-error', 'Pago actualizado');
+});
+
+document.addEventListener('submit', async e => {
+  const form = e.target;
+  const did = form.dataset?.payDebt;
+  if (!did) return;
+  e.preventDefault();
+  const f = new FormData(form);
+  const ok = await mutate(`/api/debts/${encodeURIComponent(did)}/payments`, {
+    method: 'POST',
+    body: JSON.stringify({ amount: +f.get('amount'), date: f.get('date') }),
+  });
+  if (ok) {
+    const debt = view.debts.find(x => x.id === did);
+    toast(debt && debt.remaining === 0 ? '¡Deuda saldada!' : 'Pago registrado');
+  }
+});
+
+$('#q').addEventListener('input',     e => { filters.q    = e.target.value; reload(); });
+$('#f-cat').addEventListener('change',  e => { filters.cat  = e.target.value; reload(); });
+$('#f-from').addEventListener('change', e => { filters.from = e.target.value; reload(); });
+$('#f-to').addEventListener('change',   e => { filters.to   = e.target.value; reload(); });
+
+$('#budget-overall-save').addEventListener('click', async () => {
+  const overall = Math.max(0, +$('#budget-overall').value || 0);
+  const categories = {};
+  for (const el of $$('[data-budget-cat]')) {
+    const v = Math.max(0, +el.value || 0);
+    if (v > 0) categories[el.dataset.budgetCat] = v;
+  }
+  if (await mutate('/api/budgets', { method: 'PUT', body: JSON.stringify({ overall, categories }) })) toast('Objetivo guardado');
+});
+
+document.addEventListener('change', async e => {
+  const cat = e.target.dataset?.budgetCat;
+  if (!cat) return;
+  const categories = {};
+  for (const el of $$('[data-budget-cat]')) {
+    const v = Math.max(0, +el.value || 0);
+    if (v > 0) categories[el.dataset.budgetCat] = v;
+  }
+  await mutate('/api/budgets', {
+    method: 'PUT',
+    body: JSON.stringify({ overall: view.budgets.overall || 0, categories }),
+  });
+});
+
+$('#export-json').addEventListener('click', async () => {
+  try {
+    const dump = await api('/api/export');
+    download(JSON.stringify(dump, null, 2), `finanzas-${view.today}.json`, 'application/json');
+  } catch (e) { if (e.message !== 'unauthorized') toast(e.message); }
+});
+
+$('#export-csv').addEventListener('click', async () => {
+  try {
+    const dump = await api('/api/export');
+    const rows = [['Fecha', 'Descripcion', 'Categoria', 'Monto']];
+    for (const e of dump.expenses) if (e.date.startsWith(view.ym)) rows.push([e.date, e.desc, e.category, e.amount]);
+    const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+    download('﻿' + csv, `finanzas-${view.ym}.csv`, 'text/csv;charset=utf-8');
+  } catch (e) { if (e.message !== 'unauthorized') toast(e.message); }
+});
+
+$('#import-btn').addEventListener('click', () => $('#import').click());
+$('#import').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    const parsed = JSON.parse(await file.text());
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.expenses)) throw new Error('shape');
+    if (!confirm('Reemplazar todos los datos actuales con los del archivo?')) return;
+    if (await mutate('/api/import', { method: 'POST', body: JSON.stringify(parsed) })) toast('Datos importados');
+  } catch { alert('Archivo inválido.'); }
+});
+
+$('#wipe').addEventListener('click', () => {
+  const dlg = $('#confirm-dialog');
+  $('#confirm-input').value = '';
+  $('#confirm-ok').disabled = true;
+  dlg.showModal();
+});
+$('#confirm-input').addEventListener('input', e => {
+  $('#confirm-ok').disabled = e.target.value !== 'BORRAR';
+});
+$('#confirm-dialog').addEventListener('close', async () => {
+  const dlg = $('#confirm-dialog');
+  if (dlg.returnValue === 'ok' && $('#confirm-input').value === 'BORRAR') {
+    if (await mutate('/api/all', { method: 'DELETE' })) toast('Datos borrados');
+  }
+});
+
+const doLogout = () => { if (confirm('¿Cerrar sesión?')) logout(); };
+$('#header-lock').addEventListener('click', doLogout);
+$('#btn-logout').addEventListener('click', doLogout);
+
+// Login
+$('#lock-dialog').addEventListener('cancel', e => e.preventDefault()); // no cerrar con Esc
+$('#lock-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const u = $('#lock-user').value.trim();
+  const p = $('#lock-pass').value;
+  const errEl = $('#lock-error');
+  const okBtn = $('#lock-ok');
+  okBtn.disabled = true; okBtn.textContent = 'Entrando…';
+  try {
+    await login(u, p);
+    errEl.classList.add('hidden');
+    $('#lock-dialog').close();
+    $('#lock-pass').value = '';
+    await reload();
+  } catch {
+    errEl.classList.remove('hidden');
+    $('#lock-pass').value = '';
+    $('#lock-pass').focus();
+  } finally {
+    okBtn.disabled = false; okBtn.textContent = 'Entrar';
+  }
+});
+
+// ============ Init ============
+// El backend define las categorías; el frontend sólo las lista con su ícono.
+function populateCategorySelects(cats) {
+  const opts = cats.map(c => `<option value="${c}">${metaOf(c).icon} ${c}</option>`).join('');
+  document.querySelector('#expense-form select[name=category]').innerHTML = opts;
+  $('#f-cat').innerHTML = '<option value="">Todas las categorías</option>' + opts;
+}
+// Fallback local hasta que llegue la view (para que el select no esté vacío).
+populateCategorySelects(Object.keys(CAT_META));
+document.querySelector('#expense-form input[name=date]').value =
+  new Date().toISOString().slice(0, 10);
+$('#today').textContent = new Date().toLocaleDateString('es-PY', { weekday: 'long', day: 'numeric', month: 'long' });
+
+const offlineBadge = $('#offline-badge');
+const updateOnline = () => offlineBadge.classList.toggle('hidden', navigator.onLine);
+window.addEventListener('online',  updateOnline);
+window.addEventListener('offline', updateOnline);
+updateOnline();
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW', err));
+  });
+}
+
+render();
+
+(async () => {
+  if (!getToken()) { showLogin(); return; }
+  await reload();
+  if (view && view.categories) populateCategorySelects(view.categories);
+})();
+
+window.addEventListener('load', () => {
+  if (view && (!catChart || !trendChart)) renderDashboard();
+});
+</script>
+</body>
+</html>

@@ -1,6 +1,29 @@
+name: finapp
+
 services:
-  finapp:
-    build: .
+  api:
+    build: ./back
+    container_name: finapp-api
+    expose:
+      - "8080"
+    volumes:
+      - finapp_data:/data
+    environment:
+      DB_PATH: /data/finapp.db
+      PORT: 8080
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production-please}
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASS: ${ADMIN_PASS:-admin}
+    restart: unless-stopped
+
+  web:
+    build: ./front
+    container_name: finapp-web
     ports:
       - "8080:80"
+    depends_on:
+      - api
     restart: unless-stopped
+
+volumes:
+  finapp_data:
