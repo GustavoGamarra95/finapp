@@ -1,0 +1,9 @@
+{
+  "name": "finapp",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@libsql/client": "^0.15.0"
+  }
+}
