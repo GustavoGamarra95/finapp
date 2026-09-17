@@ -9,8 +9,8 @@ front estático. Login user/pass o con Google, con sync automático de deudas a 
 - **API**: `api/router.js` (single-file, Node runtime en Vercel). Toda la lógica y validación
   vive acá; el front sólo pinta.
 - **DB**: Turso (libSQL, `@libsql/client`). En dev local cae a `file:./finapp.db`.
-- **Auth**: JWT HS256 hand-rolled con `node:crypto`. Login user/pass o Google OAuth
-  (whitelisted por email).
+- **Auth**: Google OAuth únicamente. `username = email`, cada usuario tiene su propio
+  dashboard aislado. JWT HS256 hand-rolled con `node:crypto`.
 - **Calendario**: Google Calendar API (`calendar.events`). Cada deuda es un evento all-day
   con recordatorios 24h y 1h antes del vencimiento.
 
@@ -28,7 +28,6 @@ finapp/
 ## Endpoints
 
 Auth:
-- `POST /api/login` — user/pass → `{ token, username }`.
 - `GET  /api/auth/google/start` — redirige al consent de Google.
 - `GET  /api/auth/google/callback` — canjea code, guarda tokens, redirige a `/?token=...`.
 - `POST /api/auth/google/resync` — re-sincroniza todas las deudas al calendario.
@@ -54,18 +53,17 @@ turso db show finapp --url        # → TURSO_DATABASE_URL
 turso db tokens create finapp     # → TURSO_AUTH_TOKEN
 
 # 2. Vars en Vercel (Production/Preview/Development)
-#    JWT_SECRET, ADMIN_USER, ADMIN_PASS, TURSO_DATABASE_URL, TURSO_AUTH_TOKEN
-#    Google (opcional): GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
-#                       GOOGLE_REDIRECT_URI, GOOGLE_ALLOWED_EMAIL
+#    TURSO_DATABASE_URL, TURSO_AUTH_TOKEN, JWT_SECRET
+#    GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI
 
 # 3. Deploy
 vercel deploy --prod
 ```
 
-En el primer arranque el bootstrap crea tablas y siembra el usuario admin
-(`ADMIN_USER` / `ADMIN_PASS`) si no existe.
+Bootstrap crea las tablas en el primer arranque. Los usuarios se crean solos al loguear
+con Google.
 
-## Google OAuth + Calendar (opcional)
+## Google OAuth + Calendar
 
 1. https://console.cloud.google.com → New Project → Enable **Google Calendar API**.
 2. **OAuth consent screen**: External, agregá tu email como test user, scopes `openid`,
@@ -73,11 +71,10 @@ En el primer arranque el bootstrap crea tablas y siembra el usuario admin
 3. **Credentials → OAuth Client ID → Web application**:
    - Authorized redirect URI: `https://<tu-app>.vercel.app/api/auth/google/callback`.
 4. Copiá Client ID y Client Secret a las env vars de Vercel.
-5. `GOOGLE_ALLOWED_EMAIL` = tu Gmail (whitelist single-user).
 
-Con OAuth en modo *Testing*, el refresh token expira en 7 días. Para uso personal alcanza
-re-loguearse cuando pasa; publicar a producción requiere verificación de Google porque
-`calendar.events` es scope sensible.
+Con OAuth en modo *Testing*, el refresh token expira en 7 días y sólo los emails cargados
+como "test users" pueden entrar. Publicar a producción requiere verificación de Google
+porque `calendar.events` es scope sensible.
 
 ## Dev local
 

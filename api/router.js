@@ -1,15 +1,12 @@
 import { createClient } from '@libsql/client';
-import { scryptSync, randomBytes, timingSafeEqual, createHmac } from 'node:crypto';
+import { randomBytes, createHmac, timingSafeEqual } from 'node:crypto';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-only-change-me';
-const ADMIN_USER = process.env.ADMIN_USER || 'admin';
-const ADMIN_PASS = process.env.ADMIN_PASS || 'admin';
 const CATEGORIES = ['Comida', 'Transporte', 'Servicios', 'Vivienda', 'Salud', 'Ocio', 'Otro'];
 
 const GOOGLE_CLIENT_ID     = process.env.GOOGLE_CLIENT_ID || '';
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 const GOOGLE_REDIRECT_URI  = process.env.GOOGLE_REDIRECT_URI || '';
-const GOOGLE_ALLOWED_EMAIL = (process.env.GOOGLE_ALLOWED_EMAIL || '').toLowerCase();
 const GOOGLE_SCOPES = 'openid email https://www.googleapis.com/auth/calendar.events';
 
 const db = createClient({
@@ -18,9 +15,8 @@ const db = createClient({
 });
 
 // ============ Utilidades ============
-const uid       = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-const hashPass  = (p, salt) => scryptSync(p, salt, 64).toString('hex');
-const todayStr  = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+const uid      = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const ymOf      = d => d.slice(0, 7);
 const currentYm = () => todayStr().slice(0, 7);
 function prevYm() {
@@ -69,9 +65,9 @@ async function ensureBootstrap() {
   if (bootstrapped) return;
   await db.batch([
     `CREATE TABLE IF NOT EXISTS users (
-      username  TEXT PRIMARY KEY,
-      pass_hash TEXT NOT NULL,
-      pass_salt TEXT NOT NULL
+      username TEXT PRIMARY KEY,
+      email    TEXT NOT NULL,
+      created  INTEGER NOT NULL
     )`,
     `CREATE TABLE IF NOT EXISTS expenses (
       id       TEXT PRIMARY KEY,
@@ -116,24 +112,7 @@ async function ensureBootstrap() {
       event_id TEXT NOT NULL
     )`,
   ], 'write');
-  const r = await db.execute({ sql: 'SELECT 1 FROM users WHERE username = ?', args: [ADMIN_USER] });
-  if (r.rows.length === 0) {
-    const salt = randomBytes(16).toString('hex');
-    await db.execute({
-      sql: 'INSERT INTO users (username, pass_hash, pass_salt) VALUES (?, ?, ?)',
-      args: [ADMIN_USER, hashPass(ADMIN_PASS, salt), salt],
-    });
-  }
   bootstrapped = true;
-}
-
-async function verifyLogin(username, password) {
-  const r = await db.execute({ sql: 'SELECT pass_hash, pass_salt FROM users WHERE username = ?', args: [username] });
-  if (r.rows.length === 0) return false;
-  const row = r.rows[0];
-  const a = Buffer.from(row.pass_hash, 'hex');
-  const b = Buffer.from(hashPass(password, row.pass_salt), 'hex');
-  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 // ============ Reglas de negocio ============
@@ -456,9 +435,14 @@ export default async function handler(req, res) {
       const idPayload = decodeIdToken(tokens.id_token || '');
       const email = (idPayload.email || '').toLowerCase();
       if (!email || !idPayload.email_verified) throw new HttpErr(403, 'email no verificado');
-      if (GOOGLE_ALLOWED_EMAIL && email !== GOOGLE_ALLOWED_EMAIL) throw new HttpErr(403, 'email no autorizado');
-      const username = ADMIN_USER;
-      const expiresAt = Math.floor(Date.now() / 1000) + Number(tokens.expires_in || 3600);
+      const username = email;
+      const now = Math.floor(Date.now() / 1000);
+      await db.execute({
+        sql: `INSERT INTO users (username, email, created) VALUES (?, ?, ?)
+              ON CONFLICT(username) DO UPDATE SET email = excluded.email`,
+        args: [username, email, now],
+      });
+      const expiresAt = now + Number(tokens.expires_in || 3600);
       await db.execute({
         sql: `INSERT INTO google_tokens (username, email, access_token, refresh_token, expires_at, calendar_id)
               VALUES (?, ?, ?, ?, ?, 'primary')
@@ -478,16 +462,6 @@ export default async function handler(req, res) {
       res.setHeader('Set-Cookie', 'oauth_state=; Path=/; Max-Age=0');
       res.writeHead(302, { Location: `/?token=${encodeURIComponent(token)}&user=${encodeURIComponent(username)}` });
       return res.end();
-    }
-
-    // Login público
-    if (m === 'POST' && p === '/api/login') {
-      const { username, password } = body;
-      if (!username || !password || !(await verifyLogin(username, password))) {
-        return res.status(401).json({ error: 'credenciales inválidas' });
-      }
-      const exp = Math.floor(Date.now() / 1000) + 30 * 86400;
-      return res.status(200).json({ token: jwtSign({ sub: username, exp }), username });
     }
 
     // Auth requerido
