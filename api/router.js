@@ -6,6 +6,12 @@ const ADMIN_USER = process.env.ADMIN_USER || 'admin';
 const ADMIN_PASS = process.env.ADMIN_PASS || 'admin';
 const CATEGORIES = ['Comida', 'Transporte', 'Servicios', 'Vivienda', 'Salud', 'Ocio', 'Otro'];
 
+const GOOGLE_CLIENT_ID     = process.env.GOOGLE_CLIENT_ID || '';
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
+const GOOGLE_REDIRECT_URI  = process.env.GOOGLE_REDIRECT_URI || '';
+const GOOGLE_ALLOWED_EMAIL = (process.env.GOOGLE_ALLOWED_EMAIL || '').toLowerCase();
+const GOOGLE_SCOPES = 'openid email https://www.googleapis.com/auth/calendar.events';
+
 const db = createClient({
   url: process.env.TURSO_DATABASE_URL || 'file:./finapp.db',
   authToken: process.env.TURSO_AUTH_TOKEN,
@@ -97,6 +103,18 @@ async function ensureBootstrap() {
       overall  INTEGER NOT NULL DEFAULT 0,
       cats     TEXT NOT NULL DEFAULT '{}'
     )`,
+    `CREATE TABLE IF NOT EXISTS google_tokens (
+      username      TEXT PRIMARY KEY REFERENCES users(username),
+      email         TEXT NOT NULL,
+      access_token  TEXT NOT NULL,
+      refresh_token TEXT,
+      expires_at    INTEGER NOT NULL,
+      calendar_id   TEXT NOT NULL DEFAULT 'primary'
+    )`,
+    `CREATE TABLE IF NOT EXISTS debt_events (
+      debt_id  TEXT PRIMARY KEY REFERENCES debts(id) ON DELETE CASCADE,
+      event_id TEXT NOT NULL
+    )`,
   ], 'write');
   const r = await db.execute({ sql: 'SELECT 1 FROM users WHERE username = ?', args: [ADMIN_USER] });
   if (r.rows.length === 0) {
@@ -172,11 +190,12 @@ async function buildView(username, filters = {}) {
   const from  = filters.from || '';
   const to    = filters.to || '';
 
-  const [expRes, debtsRes, paysRes, budgetRes] = await Promise.all([
+  const [expRes, debtsRes, paysRes, budgetRes, gRes] = await Promise.all([
     db.execute({ sql: 'SELECT id, date, descr AS "desc", category, amount FROM expenses WHERE username = ?', args: [username] }),
     db.execute({ sql: 'SELECT id, creditor, amount, due, installments FROM debts WHERE username = ?', args: [username] }),
     db.execute({ sql: 'SELECT p.id, p.debt_id, p.date, p.amount FROM payments p JOIN debts d ON d.id = p.debt_id WHERE d.username = ? ORDER BY p.date DESC, p.id DESC', args: [username] }),
     db.execute({ sql: 'SELECT overall, cats FROM budgets WHERE username = ?', args: [username] }),
+    db.execute({ sql: 'SELECT email FROM google_tokens WHERE username = ?', args: [username] }),
   ]);
   const allExpenses = expRes.rows.map(r => ({ id: r.id, date: r.date, desc: r.desc, category: r.category, amount: Number(r.amount) }));
 
@@ -271,7 +290,134 @@ async function buildView(username, filters = {}) {
     expenses: { groups, flat: filtered, filteredCount: filtered.length, totalCount: allExpenses.length },
     debts,
     budgets: { overall, categories: budgetCategories },
+    google: { connected: gRes.rows.length > 0, email: gRes.rows[0]?.email || null, configured: !!GOOGLE_CLIENT_ID },
   };
+}
+
+// ============ Google OAuth + Calendar ============
+function parseCookies(req) {
+  const out = {};
+  for (const p of (req.headers.cookie || '').split(';')) {
+    const [k, ...v] = p.trim().split('=');
+    if (k) out[k] = decodeURIComponent(v.join('='));
+  }
+  return out;
+}
+function decodeIdToken(idToken) {
+  // ponytail: token viene por HTTPS directo desde Google, se confía en payload sin verificar firma.
+  const [, payload] = idToken.split('.');
+  if (!payload) return {};
+  try { return JSON.parse(b64uDec(payload)); } catch { return {}; }
+}
+async function exchangeCode(code) {
+  const r = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      code, client_id: GOOGLE_CLIENT_ID, client_secret: GOOGLE_CLIENT_SECRET,
+      redirect_uri: GOOGLE_REDIRECT_URI, grant_type: 'authorization_code',
+    }),
+  });
+  if (!r.ok) throw new HttpErr(400, `google token exchange failed: ${await r.text()}`);
+  return r.json();
+}
+async function refreshAccessToken(refreshToken) {
+  const r = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      refresh_token: refreshToken, client_id: GOOGLE_CLIENT_ID,
+      client_secret: GOOGLE_CLIENT_SECRET, grant_type: 'refresh_token',
+    }),
+  });
+  if (!r.ok) return null;
+  return r.json();
+}
+async function getValidAccessToken(username) {
+  const r = await db.execute({ sql: 'SELECT access_token, refresh_token, expires_at, calendar_id FROM google_tokens WHERE username = ?', args: [username] });
+  if (r.rows.length === 0) return null;
+  const row = r.rows[0];
+  const now = Math.floor(Date.now() / 1000);
+  if (Number(row.expires_at) - 60 > now) return { access_token: row.access_token, calendar_id: row.calendar_id };
+  if (!row.refresh_token) return null;
+  const refreshed = await refreshAccessToken(row.refresh_token);
+  if (!refreshed || !refreshed.access_token) return null;
+  const newExp = now + Number(refreshed.expires_in || 3600);
+  await db.execute({
+    sql: 'UPDATE google_tokens SET access_token = ?, expires_at = ? WHERE username = ?',
+    args: [refreshed.access_token, newExp, username],
+  });
+  return { access_token: refreshed.access_token, calendar_id: row.calendar_id };
+}
+function debtEventBody(debt) {
+  const paid = debt.remaining === 0;
+  const dueEnd = (() => {
+    const [y, m, d] = debt.due.split('-').map(Number);
+    const nd = new Date(Date.UTC(y, m - 1, d + 1));
+    return `${nd.getUTCFullYear()}-${String(nd.getUTCMonth() + 1).padStart(2, '0')}-${String(nd.getUTCDate()).padStart(2, '0')}`;
+  })();
+  return {
+    summary: `${paid ? '✅ ' : '💰 '}Deuda ${debt.creditor} — Gs ${debt.remaining.toLocaleString('es-PY')}`,
+    description: `Total: Gs ${debt.amount.toLocaleString('es-PY')}\nPagado: Gs ${debt.paid.toLocaleString('es-PY')}\nPendiente: Gs ${debt.remaining.toLocaleString('es-PY')}${debt.installments ? `\nCuotas: ${debt.installments}` : ''}`,
+    start: { date: debt.due },
+    end:   { date: dueEnd },
+    reminders: { useDefault: false, overrides: paid ? [] : [
+      { method: 'popup', minutes: 24 * 60 },
+      { method: 'popup', minutes: 60 },
+    ] },
+    transparency: paid ? 'transparent' : 'opaque',
+  };
+}
+async function calendarFetch(access, calendarId, path, opts = {}) {
+  return fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events${path}`, {
+    ...opts,
+    headers: { authorization: `Bearer ${access}`, 'content-type': 'application/json', ...(opts.headers || {}) },
+  });
+}
+async function syncDebtEvent(username, debt) {
+  const tok = await getValidAccessToken(username);
+  if (!tok) return;
+  const existing = await db.execute({ sql: 'SELECT event_id FROM debt_events WHERE debt_id = ?', args: [debt.id] });
+  const body = JSON.stringify(debtEventBody(debt));
+  try {
+    if (existing.rows.length === 0) {
+      const r = await calendarFetch(tok.access_token, tok.calendar_id, '', { method: 'POST', body });
+      if (!r.ok) return;
+      const ev = await r.json();
+      await db.execute({ sql: 'INSERT INTO debt_events (debt_id, event_id) VALUES (?, ?)', args: [debt.id, ev.id] });
+    } else {
+      const eid = existing.rows[0].event_id;
+      const r = await calendarFetch(tok.access_token, tok.calendar_id, `/${encodeURIComponent(eid)}`, { method: 'PUT', body });
+      if (r.status === 404) {
+        // El evento fue borrado en Google → re-crear.
+        await db.execute({ sql: 'DELETE FROM debt_events WHERE debt_id = ?', args: [debt.id] });
+        return syncDebtEvent(username, debt);
+      }
+    }
+  } catch (e) {
+    console.error('calendar sync failed:', e.message);
+  }
+}
+async function removeDebtEvent(username, debtId) {
+  const tok = await getValidAccessToken(username);
+  if (!tok) return;
+  const r = await db.execute({ sql: 'SELECT event_id FROM debt_events WHERE debt_id = ?', args: [debtId] });
+  if (r.rows.length === 0) return;
+  try {
+    await calendarFetch(tok.access_token, tok.calendar_id, `/${encodeURIComponent(r.rows[0].event_id)}`, { method: 'DELETE' });
+  } catch (e) { console.error('calendar delete failed:', e.message); }
+  await db.execute({ sql: 'DELETE FROM debt_events WHERE debt_id = ?', args: [debtId] });
+}
+async function fetchDebtForSync(debtId, username) {
+  const [dR, pR] = await Promise.all([
+    db.execute({ sql: 'SELECT id, creditor, amount, due, installments FROM debts WHERE id = ? AND username = ?', args: [debtId, username] }),
+    db.execute({ sql: 'SELECT COALESCE(SUM(amount),0) AS s FROM payments WHERE debt_id = ?', args: [debtId] }),
+  ]);
+  if (dR.rows.length === 0) return null;
+  const d = dR.rows[0];
+  const amount = Number(d.amount);
+  const paid = Number(pR.rows[0].s);
+  return { id: d.id, creditor: d.creditor, amount, due: d.due, installments: d.installments, paid, remaining: Math.max(0, amount - paid) };
 }
 
 // ============ Handler Vercel ============
@@ -283,6 +429,56 @@ export default async function handler(req, res) {
     const m = req.method;
     const q = Object.fromEntries(url.searchParams);
     const body = req.body || {};
+
+    // Google OAuth público
+    if (m === 'GET' && p === '/api/auth/google/start') {
+      if (!GOOGLE_CLIENT_ID) throw new HttpErr(500, 'Google OAuth no configurado');
+      const state = randomBytes(16).toString('hex');
+      const auth = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+      auth.searchParams.set('client_id', GOOGLE_CLIENT_ID);
+      auth.searchParams.set('redirect_uri', GOOGLE_REDIRECT_URI);
+      auth.searchParams.set('response_type', 'code');
+      auth.searchParams.set('scope', GOOGLE_SCOPES);
+      auth.searchParams.set('access_type', 'offline');
+      auth.searchParams.set('prompt', 'consent');
+      auth.searchParams.set('state', state);
+      res.setHeader('Set-Cookie', `oauth_state=${state}; Path=/; Max-Age=600; HttpOnly; Secure; SameSite=Lax`);
+      res.writeHead(302, { Location: auth.toString() });
+      return res.end();
+    }
+    if (m === 'GET' && p === '/api/auth/google/callback') {
+      const cookies = parseCookies(req);
+      const stateCookie = cookies.oauth_state || '';
+      const state = q.state || '';
+      if (!state || state !== stateCookie) throw new HttpErr(400, 'state inválido');
+      if (!q.code) throw new HttpErr(400, 'code faltante');
+      const tokens = await exchangeCode(q.code);
+      const idPayload = decodeIdToken(tokens.id_token || '');
+      const email = (idPayload.email || '').toLowerCase();
+      if (!email || !idPayload.email_verified) throw new HttpErr(403, 'email no verificado');
+      if (GOOGLE_ALLOWED_EMAIL && email !== GOOGLE_ALLOWED_EMAIL) throw new HttpErr(403, 'email no autorizado');
+      const username = ADMIN_USER;
+      const expiresAt = Math.floor(Date.now() / 1000) + Number(tokens.expires_in || 3600);
+      await db.execute({
+        sql: `INSERT INTO google_tokens (username, email, access_token, refresh_token, expires_at, calendar_id)
+              VALUES (?, ?, ?, ?, ?, 'primary')
+              ON CONFLICT(username) DO UPDATE SET email = excluded.email, access_token = excluded.access_token,
+                refresh_token = COALESCE(excluded.refresh_token, google_tokens.refresh_token),
+                expires_at = excluded.expires_at`,
+        args: [username, email, tokens.access_token, tokens.refresh_token || null, expiresAt],
+      });
+      const jwtExp = Math.floor(Date.now() / 1000) + 30 * 86400;
+      const token = jwtSign({ sub: username, exp: jwtExp });
+      // Sync inicial de deudas activas
+      const debtsR = await db.execute({ sql: 'SELECT id FROM debts WHERE username = ?', args: [username] });
+      for (const row of debtsR.rows) {
+        const d = await fetchDebtForSync(row.id, username);
+        if (d) await syncDebtEvent(username, d);
+      }
+      res.setHeader('Set-Cookie', 'oauth_state=; Path=/; Max-Age=0');
+      res.writeHead(302, { Location: `/?token=${encodeURIComponent(token)}&user=${encodeURIComponent(username)}` });
+      return res.end();
+    }
 
     // Login público
     if (m === 'POST' && p === '/api/login') {
@@ -325,10 +521,13 @@ export default async function handler(req, res) {
 
     if (m === 'POST' && p === '/api/debts') {
       const d = validateDebt(body);
+      const newId = uid();
       await db.execute({
         sql: 'INSERT INTO debts (id, username, creditor, amount, due, installments) VALUES (?, ?, ?, ?, ?, ?)',
-        args: [uid(), user, d.creditor, d.amount, d.due, d.installments],
+        args: [newId, user, d.creditor, d.amount, d.due, d.installments],
       });
+      const dSync = await fetchDebtForSync(newId, user);
+      if (dSync) await syncDebtEvent(user, dSync);
       return sendView();
     }
     mm = p.match(/^\/api\/debts\/([^/]+)$/);
@@ -343,9 +542,12 @@ export default async function handler(req, res) {
         sql: 'UPDATE debts SET creditor = ?, amount = ?, due = ?, installments = ? WHERE id = ? AND username = ?',
         args: [d.creditor, d.amount, d.due, d.installments, mm[1], user],
       });
+      const dSync = await fetchDebtForSync(mm[1], user);
+      if (dSync) await syncDebtEvent(user, dSync);
       return sendView();
     }
     if (mm && m === 'DELETE') {
+      await removeDebtEvent(user, mm[1]);
       await db.execute({ sql: 'DELETE FROM debts WHERE id = ? AND username = ?', args: [mm[1], user] });
       return sendView();
     }
@@ -361,6 +563,8 @@ export default async function handler(req, res) {
         sql: 'INSERT INTO payments (debt_id, date, amount) VALUES (?, ?, ?)',
         args: [mm[1], pay.date, pay.amount],
       });
+      const dSync = await fetchDebtForSync(mm[1], user);
+      if (dSync) await syncDebtEvent(user, dSync);
       return sendView();
     }
 
@@ -378,6 +582,8 @@ export default async function handler(req, res) {
         sql: 'UPDATE payments SET date = ?, amount = ? WHERE id = ? AND debt_id = ?',
         args: [pay.date, pay.amount, Number(pid), did],
       });
+      const dSync = await fetchDebtForSync(did, user);
+      if (dSync) await syncDebtEvent(user, dSync);
       return sendView();
     }
     if (mm && m === 'DELETE') {
@@ -386,6 +592,8 @@ export default async function handler(req, res) {
         sql: 'DELETE FROM payments WHERE id = ? AND debt_id IN (SELECT id FROM debts WHERE id = ? AND username = ?)',
         args: [Number(pid), did, user],
       });
+      const dSync = await fetchDebtForSync(did, user);
+      if (dSync) await syncDebtEvent(user, dSync);
       return sendView();
     }
 
@@ -468,7 +676,31 @@ export default async function handler(req, res) {
       return sendView();
     }
 
+    if (m === 'DELETE' && p === '/api/auth/google') {
+      const tok = await getValidAccessToken(user);
+      if (tok) {
+        try { await fetch(`https://oauth2.googleapis.com/revoke?token=${tok.access_token}`, { method: 'POST' }); } catch {}
+      }
+      await db.batch([
+        { sql: 'DELETE FROM debt_events WHERE debt_id IN (SELECT id FROM debts WHERE username = ?)', args: [user] },
+        { sql: 'DELETE FROM google_tokens WHERE username = ?', args: [user] },
+      ], 'write');
+      return sendView();
+    }
+
+    if (m === 'POST' && p === '/api/auth/google/resync') {
+      const debtsR = await db.execute({ sql: 'SELECT id FROM debts WHERE username = ?', args: [user] });
+      for (const row of debtsR.rows) {
+        const d = await fetchDebtForSync(row.id, user);
+        if (d) await syncDebtEvent(user, d);
+      }
+      return sendView();
+    }
+
     if (m === 'DELETE' && p === '/api/all') {
+      // Borrar eventos en Google Calendar antes de nukear las deudas.
+      const debtsR = await db.execute({ sql: 'SELECT id FROM debts WHERE username = ?', args: [user] });
+      for (const row of debtsR.rows) await removeDebtEvent(user, row.id);
       await db.batch([
         { sql: 'DELETE FROM payments WHERE debt_id IN (SELECT id FROM debts WHERE username = ?)', args: [user] },
         { sql: 'DELETE FROM debts WHERE username = ?', args: [user] },

@@ -1,5 +1,5 @@
 // ponytail: stale-while-revalidate, un solo cache. Bump CACHE para invalidar.
-const CACHE = 'finapp-v6';
+const CACHE = 'finapp-v7';
 const SHELL = [
   './',
   './index.html',

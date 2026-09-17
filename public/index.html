@@ -227,6 +227,18 @@
         <button id="btn-logout" class="btn-ghost">Cerrar sesión</button>
       </div>
     </div>
+    <div class="card">
+      <div class="flex items-center gap-2 mb-1">
+        <h2 class="font-semibold">Google Calendar</h2>
+        <span id="google-badge" class="badge bg-slate-100 text-slate-600">Sin vincular</span>
+      </div>
+      <p id="google-desc" class="text-xs text-slate-500 mb-3">Vinculá tu cuenta para que cada deuda se cree como evento con recordatorios en tu calendario.</p>
+      <div class="flex flex-wrap gap-2">
+        <a id="google-connect" href="/api/auth/google/start" class="btn-primary">Vincular con Google</a>
+        <button id="google-resync" class="btn-ghost hidden">Re-sincronizar deudas</button>
+        <button id="google-disconnect" class="btn-ghost hidden">Desvincular</button>
+      </div>
+    </div>
     <div class="card border-red-200 bg-red-50/40">
       <h2 class="font-semibold text-red-700">Zona de peligro</h2>
       <p class="text-sm text-slate-600 mt-1 mb-3">Elimina todos los datos locales. No se puede deshacer.</p>
@@ -308,6 +320,15 @@
     <div class="flex justify-end gap-2 mt-4">
       <button type="submit" id="lock-ok" class="btn-primary">Entrar</button>
     </div>
+    <div class="flex items-center gap-2 my-3">
+      <div class="flex-1 h-px bg-slate-200"></div>
+      <span class="text-xs text-slate-400">o</span>
+      <div class="flex-1 h-px bg-slate-200"></div>
+    </div>
+    <a href="/api/auth/google/start" class="flex items-center justify-center gap-2 w-full py-2 border border-slate-300 rounded-lg text-sm font-medium hover:bg-slate-50 transition">
+      <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+      Continuar con Google
+    </a>
   </form>
 </dialog>
 
@@ -463,6 +484,32 @@ function render() {
   renderExpenses();
   renderDebts();
   renderBudgets();
+  renderGoogle();
+}
+
+function renderGoogle() {
+  const g = view.google || { connected: false, email: null, configured: false };
+  const badge = $('#google-badge');
+  const desc = $('#google-desc');
+  const connect = $('#google-connect');
+  const resync = $('#google-resync');
+  const disc = $('#google-disconnect');
+  if (!g.configured) {
+    badge.className = 'badge bg-slate-100 text-slate-500';
+    badge.textContent = 'No configurado';
+    desc.textContent = 'El servidor no tiene credenciales de Google configuradas.';
+    connect.classList.add('hidden'); resync.classList.add('hidden'); disc.classList.add('hidden');
+  } else if (g.connected) {
+    badge.className = 'badge bg-emerald-100 text-emerald-700';
+    badge.textContent = g.email || 'Conectado';
+    desc.textContent = 'Cada deuda se sincroniza como evento con recordatorio 24h y 1h antes del vencimiento.';
+    connect.classList.add('hidden'); resync.classList.remove('hidden'); disc.classList.remove('hidden');
+  } else {
+    badge.className = 'badge bg-slate-100 text-slate-600';
+    badge.textContent = 'Sin vincular';
+    desc.textContent = 'Vinculá tu cuenta para que cada deuda se cree como evento con recordatorios en tu calendario.';
+    connect.classList.remove('hidden'); resync.classList.add('hidden'); disc.classList.add('hidden');
+  }
 }
 
 function renderTabs() {
@@ -990,6 +1037,14 @@ const doLogout = () => { if (confirm('¿Cerrar sesión?')) logout(); };
 $('#header-lock').addEventListener('click', doLogout);
 $('#btn-logout').addEventListener('click', doLogout);
 
+$('#google-resync').addEventListener('click', async () => {
+  if (await mutate('/api/auth/google/resync', { method: 'POST' })) toast('Deudas re-sincronizadas');
+});
+$('#google-disconnect').addEventListener('click', async () => {
+  if (!confirm('¿Desvincular Google Calendar? Se van a borrar los eventos ya creados.')) return;
+  if (await mutate('/api/auth/google', { method: 'DELETE' })) toast('Desvinculado');
+});
+
 // Login
 $('#lock-dialog').addEventListener('cancel', e => e.preventDefault()); // no cerrar con Esc
 $('#lock-form').addEventListener('submit', async e => {
@@ -1042,6 +1097,14 @@ if ('serviceWorker' in navigator) {
 render();
 
 (async () => {
+  // Callback de Google OAuth: viene ?token=...&user=...
+  const params = new URLSearchParams(location.search);
+  const cbToken = params.get('token');
+  if (cbToken) {
+    setSession(cbToken, params.get('user') || 'gustavo');
+    history.replaceState({}, '', location.pathname);
+    toast('Vinculado con Google');
+  }
   if (!getToken()) { showLogin(); return; }
   await reload();
   if (view && view.categories) populateCategorySelects(view.categories);
