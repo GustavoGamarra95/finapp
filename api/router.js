@@ -108,8 +108,10 @@ async function ensureBootstrap() {
       calendar_id   TEXT NOT NULL DEFAULT 'primary'
     )`,
     `CREATE TABLE IF NOT EXISTS debt_events (
-      debt_id  TEXT PRIMARY KEY REFERENCES debts(id) ON DELETE CASCADE,
-      event_id TEXT NOT NULL
+      debt_id  TEXT NOT NULL REFERENCES debts(id) ON DELETE CASCADE,
+      cuota_n  INTEGER NOT NULL,
+      event_id TEXT NOT NULL,
+      PRIMARY KEY (debt_id, cuota_n)
     )`,
   ], 'write');
   bootstrapped = true;
@@ -328,18 +330,30 @@ async function getValidAccessToken(username) {
   });
   return { access_token: refreshed.access_token, calendar_id: row.calendar_id };
 }
-function debtEventBody(debt) {
+const parseInstallments = (s) => {
+  const n = parseInt(String(s || '').trim(), 10);
+  return Number.isFinite(n) && n > 0 ? n : 1;
+};
+const addMonthsIso = (dateStr, add) => {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1 + add, d));
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
+};
+const nextDayIso = (dateStr) => {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const nd = new Date(Date.UTC(y, m - 1, d + 1));
+  return `${nd.getUTCFullYear()}-${String(nd.getUTCMonth() + 1).padStart(2, '0')}-${String(nd.getUTCDate()).padStart(2, '0')}`;
+};
+function cuotaEventBody(debt, n, N) {
   const paid = debt.remaining === 0;
-  const dueEnd = (() => {
-    const [y, m, d] = debt.due.split('-').map(Number);
-    const nd = new Date(Date.UTC(y, m - 1, d + 1));
-    return `${nd.getUTCFullYear()}-${String(nd.getUTCMonth() + 1).padStart(2, '0')}-${String(nd.getUTCDate()).padStart(2, '0')}`;
-  })();
+  const cuotaAmount = Math.round(debt.amount / N);
+  const cuotaDue = addMonthsIso(debt.due, n - 1);
+  const label = N > 1 ? `Cuota ${n}/${N}` : 'Deuda';
   return {
-    summary: `${paid ? '✅ ' : '💰 '}Deuda ${debt.creditor} — Gs ${debt.remaining.toLocaleString('es-PY')}`,
-    description: `Total: Gs ${debt.amount.toLocaleString('es-PY')}\nPagado: Gs ${debt.paid.toLocaleString('es-PY')}\nPendiente: Gs ${debt.remaining.toLocaleString('es-PY')}${debt.installments ? `\nCuotas: ${debt.installments}` : ''}`,
-    start: { date: debt.due },
-    end:   { date: dueEnd },
+    summary: `${paid ? '✅ ' : '💰 '}${label} ${debt.creditor} — Gs ${cuotaAmount.toLocaleString('es-PY')}`,
+    description: `Total: Gs ${debt.amount.toLocaleString('es-PY')}\nPagado: Gs ${debt.paid.toLocaleString('es-PY')}\nPendiente: Gs ${debt.remaining.toLocaleString('es-PY')}${N > 1 ? `\nCuota: ${n} de ${N}` : ''}`,
+    start: { date: cuotaDue },
+    end:   { date: nextDayIso(cuotaDue) },
     reminders: { useDefault: false, overrides: paid ? [] : [
       { method: 'popup', minutes: 24 * 60 },
       { method: 'popup', minutes: 60 },
@@ -356,35 +370,60 @@ async function calendarFetch(access, calendarId, path, opts = {}) {
 async function syncDebtEvent(username, debt) {
   const tok = await getValidAccessToken(username);
   if (!tok) return;
-  const existing = await db.execute({ sql: 'SELECT event_id FROM debt_events WHERE debt_id = ?', args: [debt.id] });
-  const body = JSON.stringify(debtEventBody(debt));
-  try {
-    if (existing.rows.length === 0) {
-      const r = await calendarFetch(tok.access_token, tok.calendar_id, '', { method: 'POST', body });
-      if (!r.ok) return;
-      const ev = await r.json();
-      await db.execute({ sql: 'INSERT INTO debt_events (debt_id, event_id) VALUES (?, ?)', args: [debt.id, ev.id] });
-    } else {
-      const eid = existing.rows[0].event_id;
-      const r = await calendarFetch(tok.access_token, tok.calendar_id, `/${encodeURIComponent(eid)}`, { method: 'PUT', body });
-      if (r.status === 404) {
-        // El evento fue borrado en Google → re-crear.
-        await db.execute({ sql: 'DELETE FROM debt_events WHERE debt_id = ?', args: [debt.id] });
-        return syncDebtEvent(username, debt);
+  const N = parseInstallments(debt.installments);
+  const existing = await db.execute({ sql: 'SELECT cuota_n, event_id FROM debt_events WHERE debt_id = ?', args: [debt.id] });
+  const byN = new Map(existing.rows.map(r => [Number(r.cuota_n), r.event_id]));
+
+  for (let n = 1; n <= N; n++) {
+    const body = JSON.stringify(cuotaEventBody(debt, n, N));
+    try {
+      if (byN.has(n)) {
+        const eid = byN.get(n);
+        const r = await calendarFetch(tok.access_token, tok.calendar_id, `/${encodeURIComponent(eid)}`, { method: 'PUT', body });
+        if (r.status === 404) {
+          await db.execute({ sql: 'DELETE FROM debt_events WHERE debt_id = ? AND cuota_n = ?', args: [debt.id, n] });
+          const r2 = await calendarFetch(tok.access_token, tok.calendar_id, '', { method: 'POST', body });
+          if (r2.ok) {
+            const ev = await r2.json();
+            await db.execute({ sql: 'INSERT INTO debt_events (debt_id, cuota_n, event_id) VALUES (?, ?, ?)', args: [debt.id, n, ev.id] });
+          } else {
+            console.error('calendar POST failed cuota', n, r2.status, (await r2.text()).slice(0, 200));
+          }
+        } else if (!r.ok) {
+          console.error('calendar PUT failed cuota', n, r.status, (await r.text()).slice(0, 200));
+        }
+      } else {
+        const r = await calendarFetch(tok.access_token, tok.calendar_id, '', { method: 'POST', body });
+        if (r.ok) {
+          const ev = await r.json();
+          await db.execute({ sql: 'INSERT INTO debt_events (debt_id, cuota_n, event_id) VALUES (?, ?, ?)', args: [debt.id, n, ev.id] });
+        } else {
+          console.error('calendar POST failed cuota', n, r.status, (await r.text()).slice(0, 200));
+        }
       }
+    } catch (e) {
+      console.error('calendar sync failed cuota', n, e.message);
     }
-  } catch (e) {
-    console.error('calendar sync failed:', e.message);
+  }
+
+  // Cuotas de más (usuario redujo N): borrar en Calendar y DB.
+  for (const [n, eid] of byN) {
+    if (n <= N) continue;
+    try {
+      await calendarFetch(tok.access_token, tok.calendar_id, `/${encodeURIComponent(eid)}`, { method: 'DELETE' });
+    } catch (e) { console.error('calendar delete extra cuota', n, e.message); }
+    await db.execute({ sql: 'DELETE FROM debt_events WHERE debt_id = ? AND cuota_n = ?', args: [debt.id, n] });
   }
 }
 async function removeDebtEvent(username, debtId) {
   const tok = await getValidAccessToken(username);
   if (!tok) return;
   const r = await db.execute({ sql: 'SELECT event_id FROM debt_events WHERE debt_id = ?', args: [debtId] });
-  if (r.rows.length === 0) return;
-  try {
-    await calendarFetch(tok.access_token, tok.calendar_id, `/${encodeURIComponent(r.rows[0].event_id)}`, { method: 'DELETE' });
-  } catch (e) { console.error('calendar delete failed:', e.message); }
+  for (const row of r.rows) {
+    try {
+      await calendarFetch(tok.access_token, tok.calendar_id, `/${encodeURIComponent(row.event_id)}`, { method: 'DELETE' });
+    } catch (e) { console.error('calendar delete failed:', e.message); }
+  }
   await db.execute({ sql: 'DELETE FROM debt_events WHERE debt_id = ?', args: [debtId] });
 }
 async function fetchDebtForSync(debtId, username) {
