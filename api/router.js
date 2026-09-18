@@ -84,7 +84,8 @@ async function ensureBootstrap() {
       creditor     TEXT NOT NULL,
       amount       INTEGER NOT NULL CHECK (amount > 0),
       due          TEXT NOT NULL,
-      installments TEXT
+      installments TEXT,
+      cuota_amount INTEGER
     )`,
     `CREATE INDEX IF NOT EXISTS idx_debts_user ON debts(username)`,
     `CREATE TABLE IF NOT EXISTS payments (
@@ -115,9 +116,10 @@ async function ensureBootstrap() {
       PRIMARY KEY (debt_id, cuota_n)
     )`,
   ], 'write');
-  // ponytail: migración idempotente para instalaciones legacy sin cuota_n.
+  // ponytail: migraciones idempotentes para instalaciones legacy.
   try { await db.execute('ALTER TABLE payments ADD COLUMN cuota_n INTEGER'); } catch {}
   try { await db.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_debt_cuota ON payments(debt_id, cuota_n) WHERE cuota_n IS NOT NULL'); } catch {}
+  try { await db.execute('ALTER TABLE debts ADD COLUMN cuota_amount INTEGER'); } catch {}
   bootstrapped = true;
 }
 
@@ -155,7 +157,9 @@ function validateDebt(b) {
   if (!(amount > 0)) throw new HttpErr(400, 'amount debe ser positivo');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(b.due || '')) throw new HttpErr(400, 'due requerido (YYYY-MM-DD)');
   const installments = b.installments ? String(b.installments).trim().slice(0, 12) || null : null;
-  return { creditor, amount, due: b.due, installments };
+  const cuota_amount = b.cuota_amount == null || b.cuota_amount === '' ? null : Math.floor(Number(b.cuota_amount));
+  if (cuota_amount !== null && !(cuota_amount > 0)) throw new HttpErr(400, 'cuota_amount inválido');
+  return { creditor, amount, due: b.due, installments, cuota_amount };
 }
 function validatePayment(b, remaining) {
   if (!b || typeof b !== 'object') throw new HttpErr(400, 'invalid body');
@@ -179,7 +183,7 @@ async function buildView(username, filters = {}) {
 
   const [expRes, debtsRes, paysRes, budgetRes, gRes] = await Promise.all([
     db.execute({ sql: 'SELECT id, date, descr AS "desc", category, amount FROM expenses WHERE username = ?', args: [username] }),
-    db.execute({ sql: 'SELECT id, creditor, amount, due, installments FROM debts WHERE username = ?', args: [username] }),
+    db.execute({ sql: 'SELECT id, creditor, amount, due, installments, cuota_amount FROM debts WHERE username = ?', args: [username] }),
     db.execute({ sql: 'SELECT p.id, p.debt_id, p.date, p.amount, p.cuota_n FROM payments p JOIN debts d ON d.id = p.debt_id WHERE d.username = ? ORDER BY p.date DESC, p.id DESC', args: [username] }),
     db.execute({ sql: 'SELECT overall, cats FROM budgets WHERE username = ?', args: [username] }),
     db.execute({ sql: 'SELECT email FROM google_tokens WHERE username = ?', args: [username] }),
@@ -226,6 +230,7 @@ async function buildView(username, filters = {}) {
     const remaining = Math.max(0, amount - paid);
     return {
       id: d.id, creditor: d.creditor, amount, due: d.due, installments: d.installments,
+      cuota_amount: d.cuota_amount == null ? null : Number(d.cuota_amount),
       payments: pays, paid, remaining,
       pctPaid: amount > 0 ? (paid / amount) * 100 : 100,
       status: debtStatus(remaining, d.due),
@@ -351,8 +356,8 @@ const nextDayIso = (dateStr) => {
   return `${nd.getUTCFullYear()}-${String(nd.getUTCMonth() + 1).padStart(2, '0')}-${String(nd.getUTCDate()).padStart(2, '0')}`;
 };
 function cuotaAmountFor(debt, n, N) {
-  const per = Math.round(debt.amount / N);
-  return n < N ? per : debt.amount - per * (N - 1);
+  const per = debt.cuota_amount && debt.cuota_amount > 0 ? debt.cuota_amount : Math.round(debt.amount / N);
+  return n < N ? per : Math.max(0, debt.amount - per * (N - 1));
 }
 function paidCuotasSet(debt) {
   const N = parseInstallments(debt.installments);
@@ -452,7 +457,7 @@ async function removeDebtEvent(username, debtId) {
 }
 async function fetchDebtForSync(debtId, username) {
   const [dR, pR] = await Promise.all([
-    db.execute({ sql: 'SELECT id, creditor, amount, due, installments FROM debts WHERE id = ? AND username = ?', args: [debtId, username] }),
+    db.execute({ sql: 'SELECT id, creditor, amount, due, installments, cuota_amount FROM debts WHERE id = ? AND username = ?', args: [debtId, username] }),
     db.execute({ sql: 'SELECT amount, cuota_n FROM payments WHERE debt_id = ?', args: [debtId] }),
   ]);
   if (dR.rows.length === 0) return null;
@@ -464,7 +469,7 @@ async function fetchDebtForSync(debtId, username) {
     paid += Number(p.amount);
     if (p.cuota_n != null) taggedByCuota[Number(p.cuota_n)] = Number(p.amount);
   }
-  return { id: d.id, creditor: d.creditor, amount, due: d.due, installments: d.installments, paid, remaining: Math.max(0, amount - paid), taggedByCuota };
+  return { id: d.id, creditor: d.creditor, amount, due: d.due, installments: d.installments, cuota_amount: d.cuota_amount == null ? null : Number(d.cuota_amount), paid, remaining: Math.max(0, amount - paid), taggedByCuota };
 }
 
 // ============ Handler Vercel ============
@@ -565,8 +570,8 @@ export default async function handler(req, res) {
       const d = validateDebt(body);
       const newId = uid();
       await db.execute({
-        sql: 'INSERT INTO debts (id, username, creditor, amount, due, installments) VALUES (?, ?, ?, ?, ?, ?)',
-        args: [newId, user, d.creditor, d.amount, d.due, d.installments],
+        sql: 'INSERT INTO debts (id, username, creditor, amount, due, installments, cuota_amount) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        args: [newId, user, d.creditor, d.amount, d.due, d.installments, d.cuota_amount],
       });
       const dSync = await fetchDebtForSync(newId, user);
       if (dSync) await syncDebtEvent(user, dSync);
@@ -581,8 +586,8 @@ export default async function handler(req, res) {
       const paid = Number(paidR.rows[0].s);
       if (d.amount < paid) throw new HttpErr(400, `el nuevo monto (${d.amount}) es menor a lo ya pagado (${paid})`);
       await db.execute({
-        sql: 'UPDATE debts SET creditor = ?, amount = ?, due = ?, installments = ? WHERE id = ? AND username = ?',
-        args: [d.creditor, d.amount, d.due, d.installments, mm[1], user],
+        sql: 'UPDATE debts SET creditor = ?, amount = ?, due = ?, installments = ?, cuota_amount = ? WHERE id = ? AND username = ?',
+        args: [d.creditor, d.amount, d.due, d.installments, d.cuota_amount, mm[1], user],
       });
       const dSync = await fetchDebtForSync(mm[1], user);
       if (dSync) await syncDebtEvent(user, dSync);
@@ -662,14 +667,14 @@ export default async function handler(req, res) {
     if (m === 'GET' && p === '/api/export') {
       const [expR, debtR, payR, bR] = await Promise.all([
         db.execute({ sql: 'SELECT id, date, descr AS "desc", category, amount FROM expenses WHERE username = ? ORDER BY date, id', args: [user] }),
-        db.execute({ sql: 'SELECT id, creditor, amount, due, installments FROM debts WHERE username = ? ORDER BY due, id', args: [user] }),
+        db.execute({ sql: 'SELECT id, creditor, amount, due, installments, cuota_amount FROM debts WHERE username = ? ORDER BY due, id', args: [user] }),
         db.execute({ sql: 'SELECT p.debt_id, p.date, p.amount FROM payments p JOIN debts d ON d.id = p.debt_id WHERE d.username = ? ORDER BY p.date, p.id', args: [user] }),
         db.execute({ sql: 'SELECT overall, cats FROM budgets WHERE username = ?', args: [user] }),
       ]);
       const paysByDebt = {};
       for (const p of payR.rows) (paysByDebt[p.debt_id] ||= []).push({ date: p.date, amount: Number(p.amount) });
       const expenses = expR.rows.map(r => ({ id: r.id, date: r.date, desc: r.desc, category: r.category, amount: Number(r.amount) }));
-      const debts = debtR.rows.map(d => ({ id: d.id, creditor: d.creditor, amount: Number(d.amount), due: d.due, installments: d.installments, payments: paysByDebt[d.id] || [] }));
+      const debts = debtR.rows.map(d => ({ id: d.id, creditor: d.creditor, amount: Number(d.amount), due: d.due, installments: d.installments, cuota_amount: d.cuota_amount == null ? null : Number(d.cuota_amount), payments: paysByDebt[d.id] || [] }));
       const b = bR.rows[0] || { overall: 0, cats: '{}' };
       return res.status(200).json({ version: 2, expenses, debts, budgets: { overall: Number(b.overall), categories: JSON.parse(b.cats || '{}') } });
     }
@@ -695,8 +700,8 @@ export default async function handler(req, res) {
           const v = validateDebt(d);
           const did = String(d.id || uid());
           stmts.push({
-            sql: 'INSERT INTO debts (id, username, creditor, amount, due, installments) VALUES (?, ?, ?, ?, ?, ?)',
-            args: [did, user, v.creditor, v.amount, v.due, v.installments],
+            sql: 'INSERT INTO debts (id, username, creditor, amount, due, installments, cuota_amount) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            args: [did, user, v.creditor, v.amount, v.due, v.installments, v.cuota_amount],
           });
           for (const p of d.payments || []) {
             if (p && /^\d{4}-\d{2}-\d{2}$/.test(p.date) && Number(p.amount) > 0) {
