@@ -91,7 +91,8 @@ async function ensureBootstrap() {
       id      INTEGER PRIMARY KEY AUTOINCREMENT,
       debt_id TEXT NOT NULL REFERENCES debts(id) ON DELETE CASCADE,
       date    TEXT NOT NULL,
-      amount  INTEGER NOT NULL CHECK (amount > 0)
+      amount  INTEGER NOT NULL CHECK (amount > 0),
+      cuota_n INTEGER
     )`,
     `CREATE INDEX IF NOT EXISTS idx_payments_debt ON payments(debt_id)`,
     `CREATE TABLE IF NOT EXISTS budgets (
@@ -114,6 +115,9 @@ async function ensureBootstrap() {
       PRIMARY KEY (debt_id, cuota_n)
     )`,
   ], 'write');
+  // ponytail: migración idempotente para instalaciones legacy sin cuota_n.
+  try { await db.execute('ALTER TABLE payments ADD COLUMN cuota_n INTEGER'); } catch {}
+  try { await db.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_debt_cuota ON payments(debt_id, cuota_n) WHERE cuota_n IS NOT NULL'); } catch {}
   bootstrapped = true;
 }
 
@@ -159,7 +163,9 @@ function validatePayment(b, remaining) {
   const amount = Math.floor(Number(b.amount));
   if (!(amount > 0)) throw new HttpErr(400, 'amount debe ser positivo');
   if (amount > remaining) throw new HttpErr(400, 'monto excede lo pendiente');
-  return { date: b.date, amount };
+  const cuota_n = b.cuota_n == null || b.cuota_n === '' ? null : Math.floor(Number(b.cuota_n));
+  if (cuota_n !== null && !(cuota_n > 0)) throw new HttpErr(400, 'cuota_n inválido');
+  return { date: b.date, amount, cuota_n };
 }
 
 // ============ View builder ============
@@ -174,7 +180,7 @@ async function buildView(username, filters = {}) {
   const [expRes, debtsRes, paysRes, budgetRes, gRes] = await Promise.all([
     db.execute({ sql: 'SELECT id, date, descr AS "desc", category, amount FROM expenses WHERE username = ?', args: [username] }),
     db.execute({ sql: 'SELECT id, creditor, amount, due, installments FROM debts WHERE username = ?', args: [username] }),
-    db.execute({ sql: 'SELECT p.id, p.debt_id, p.date, p.amount FROM payments p JOIN debts d ON d.id = p.debt_id WHERE d.username = ? ORDER BY p.date DESC, p.id DESC', args: [username] }),
+    db.execute({ sql: 'SELECT p.id, p.debt_id, p.date, p.amount, p.cuota_n FROM payments p JOIN debts d ON d.id = p.debt_id WHERE d.username = ? ORDER BY p.date DESC, p.id DESC', args: [username] }),
     db.execute({ sql: 'SELECT overall, cats FROM budgets WHERE username = ?', args: [username] }),
     db.execute({ sql: 'SELECT email FROM google_tokens WHERE username = ?', args: [username] }),
   ]);
@@ -212,7 +218,7 @@ async function buildView(username, filters = {}) {
     : { pct: null, prevSum: 0, label: monthSum > 0 ? 'Sin gastos en el mes anterior' : 'Aún sin datos' };
 
   const paysByDebt = {};
-  for (const p of paysRes.rows) (paysByDebt[p.debt_id] ||= []).push({ id: Number(p.id), date: p.date, amount: Number(p.amount) });
+  for (const p of paysRes.rows) (paysByDebt[p.debt_id] ||= []).push({ id: Number(p.id), date: p.date, amount: Number(p.amount), cuota_n: p.cuota_n == null ? null : Number(p.cuota_n) });
   const debts = debtsRes.rows.map(d => {
     const amount = Number(d.amount);
     const pays = paysByDebt[d.id] || [];
@@ -344,21 +350,38 @@ const nextDayIso = (dateStr) => {
   const nd = new Date(Date.UTC(y, m - 1, d + 1));
   return `${nd.getUTCFullYear()}-${String(nd.getUTCMonth() + 1).padStart(2, '0')}-${String(nd.getUTCDate()).padStart(2, '0')}`;
 };
-function cuotaEventBody(debt, n, N) {
-  const paid = debt.remaining === 0;
-  const cuotaAmount = Math.round(debt.amount / N);
+function cuotaAmountFor(debt, n, N) {
+  const per = Math.round(debt.amount / N);
+  return n < N ? per : debt.amount - per * (N - 1);
+}
+function paidCuotasSet(debt) {
+  const N = parseInstallments(debt.installments);
+  const tagged = new Set(Object.keys(debt.taggedByCuota || {}).map(Number).filter(n => n >= 1 && n <= N));
+  let taggedSum = 0;
+  for (const n of tagged) taggedSum += Number(debt.taggedByCuota[n]);
+  let pool = Math.max(0, debt.paid - taggedSum);
+  const paid = new Set(tagged);
+  for (let n = 1; n <= N; n++) {
+    if (paid.has(n)) continue;
+    const cost = cuotaAmountFor(debt, n, N);
+    if (pool >= cost) { paid.add(n); pool -= cost; }
+  }
+  return paid;
+}
+function cuotaEventBody(debt, n, N, isPaid) {
+  const cuotaAmount = cuotaAmountFor(debt, n, N);
   const cuotaDue = addMonthsIso(debt.due, n - 1);
   const label = N > 1 ? `Cuota ${n}/${N}` : 'Deuda';
   return {
-    summary: `${paid ? '✅ ' : '💰 '}${label} ${debt.creditor} — Gs ${cuotaAmount.toLocaleString('es-PY')}`,
-    description: `Total: Gs ${debt.amount.toLocaleString('es-PY')}\nPagado: Gs ${debt.paid.toLocaleString('es-PY')}\nPendiente: Gs ${debt.remaining.toLocaleString('es-PY')}${N > 1 ? `\nCuota: ${n} de ${N}` : ''}`,
+    summary: `${isPaid ? '✅ ' : '💰 '}${label} ${debt.creditor} — Gs ${cuotaAmount.toLocaleString('es-PY')}`,
+    description: `Total: Gs ${debt.amount.toLocaleString('es-PY')}\nPagado: Gs ${debt.paid.toLocaleString('es-PY')}\nPendiente: Gs ${debt.remaining.toLocaleString('es-PY')}${N > 1 ? `\nCuota: ${n} de ${N}${isPaid ? ' · pagada' : ''}` : ''}`,
     start: { date: cuotaDue },
     end:   { date: nextDayIso(cuotaDue) },
-    reminders: { useDefault: false, overrides: paid ? [] : [
+    reminders: { useDefault: false, overrides: isPaid ? [] : [
       { method: 'popup', minutes: 24 * 60 },
       { method: 'popup', minutes: 60 },
     ] },
-    transparency: paid ? 'transparent' : 'opaque',
+    transparency: isPaid ? 'transparent' : 'opaque',
   };
 }
 async function calendarFetch(access, calendarId, path, opts = {}) {
@@ -371,11 +394,12 @@ async function syncDebtEvent(username, debt) {
   const tok = await getValidAccessToken(username);
   if (!tok) return;
   const N = parseInstallments(debt.installments);
+  const paidSet = paidCuotasSet(debt);
   const existing = await db.execute({ sql: 'SELECT cuota_n, event_id FROM debt_events WHERE debt_id = ?', args: [debt.id] });
   const byN = new Map(existing.rows.map(r => [Number(r.cuota_n), r.event_id]));
 
   for (let n = 1; n <= N; n++) {
-    const body = JSON.stringify(cuotaEventBody(debt, n, N));
+    const body = JSON.stringify(cuotaEventBody(debt, n, N, paidSet.has(n)));
     try {
       if (byN.has(n)) {
         const eid = byN.get(n);
@@ -429,13 +453,18 @@ async function removeDebtEvent(username, debtId) {
 async function fetchDebtForSync(debtId, username) {
   const [dR, pR] = await Promise.all([
     db.execute({ sql: 'SELECT id, creditor, amount, due, installments FROM debts WHERE id = ? AND username = ?', args: [debtId, username] }),
-    db.execute({ sql: 'SELECT COALESCE(SUM(amount),0) AS s FROM payments WHERE debt_id = ?', args: [debtId] }),
+    db.execute({ sql: 'SELECT amount, cuota_n FROM payments WHERE debt_id = ?', args: [debtId] }),
   ]);
   if (dR.rows.length === 0) return null;
   const d = dR.rows[0];
   const amount = Number(d.amount);
-  const paid = Number(pR.rows[0].s);
-  return { id: d.id, creditor: d.creditor, amount, due: d.due, installments: d.installments, paid, remaining: Math.max(0, amount - paid) };
+  let paid = 0;
+  const taggedByCuota = {};
+  for (const p of pR.rows) {
+    paid += Number(p.amount);
+    if (p.cuota_n != null) taggedByCuota[Number(p.cuota_n)] = Number(p.amount);
+  }
+  return { id: d.id, creditor: d.creditor, amount, due: d.due, installments: d.installments, paid, remaining: Math.max(0, amount - paid), taggedByCuota };
 }
 
 // ============ Handler Vercel ============
@@ -572,10 +601,15 @@ export default async function handler(req, res) {
       const paidR = await db.execute({ sql: 'SELECT COALESCE(SUM(amount),0) AS s FROM payments WHERE debt_id = ?', args: [mm[1]] });
       const remaining = Math.max(0, Number(debt.rows[0].amount) - Number(paidR.rows[0].s));
       const pay = validatePayment(body, remaining);
-      await db.execute({
-        sql: 'INSERT INTO payments (debt_id, date, amount) VALUES (?, ?, ?)',
-        args: [mm[1], pay.date, pay.amount],
-      });
+      try {
+        await db.execute({
+          sql: 'INSERT INTO payments (debt_id, date, amount, cuota_n) VALUES (?, ?, ?, ?)',
+          args: [mm[1], pay.date, pay.amount, pay.cuota_n],
+        });
+      } catch (e) {
+        if (/UNIQUE|constraint/i.test(String(e.message))) throw new HttpErr(409, `esa cuota ya tiene un pago registrado`);
+        throw e;
+      }
       const dSync = await fetchDebtForSync(mm[1], user);
       if (dSync) await syncDebtEvent(user, dSync);
       return sendView();
