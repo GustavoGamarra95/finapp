@@ -415,7 +415,10 @@ const nextDayIso = (dateStr) => {
 };
 function cuotaAmountFor(debt, n, N) {
   const per = debt.cuota_amount && debt.cuota_amount > 0 ? debt.cuota_amount : Math.round(debt.amount / N);
-  return n < N ? per : Math.max(0, debt.amount - per * (N - 1));
+  if (n < N) return per;
+  const last = debt.amount - per * (N - 1);
+  // ponytail: si el total no cuadra con cuota × N, la última usa "per" para no salir 0/negativa.
+  return last > 0 ? last : per;
 }
 function paidCuotasSet(debt) {
   const N = parseInstallments(debt.installments);

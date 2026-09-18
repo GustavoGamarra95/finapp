@@ -863,7 +863,9 @@ const addMonthsIso = (dateStr, add) => {
 };
 const cuotaAmt = (d, n, N) => {
   const per = d.cuota_amount && d.cuota_amount > 0 ? d.cuota_amount : Math.round(d.amount / N);
-  return n < N ? per : Math.max(0, d.amount - per * (N - 1));
+  if (n < N) return per;
+  const last = d.amount - per * (N - 1);
+  return last > 0 ? last : per;
 };
 
 // Hybrid: cuota paga = tag explícito OR cubierta por abonos sin taggear.
@@ -1288,6 +1290,39 @@ document.addEventListener('input', e => {
                  : digits.length > 2 ? `${digits.slice(0,2)}/${digits.slice(2)}`
                  : digits;
 });
+
+// ponytail: botón 📅 al lado de cada input dd/mm/yyyy que abre el picker nativo.
+function attachDatePickers() {
+  document.querySelectorAll('input[pattern="\\d{2}/\\d{2}/\\d{4}"]:not([data-pk])').forEach(inp => {
+    inp.dataset.pk = '1';
+    const wrap = document.createElement('span');
+    wrap.className = 'relative inline-block w-full';
+    for (const c of [...inp.classList]) {
+      if (c.startsWith('col-span-') || c.startsWith('md:col-span-') || c === 'flex-1') {
+        wrap.classList.add(c); inp.classList.remove(c);
+      }
+    }
+    inp.classList.add('pr-9', 'w-full');
+    inp.parentNode.insertBefore(wrap, inp);
+    wrap.appendChild(inp);
+    const btn = document.createElement('button');
+    btn.type = 'button'; btn.textContent = '📅'; btn.tabIndex = -1;
+    btn.className = 'absolute right-1 top-1/2 -translate-y-1/2 text-slate-400 hover:text-primary px-1 text-sm cursor-pointer';
+    btn.addEventListener('click', () => {
+      const picker = Object.assign(document.createElement('input'), { type: 'date', value: dmy2iso(inp.value) || '' });
+      picker.style.cssText = 'position:absolute;left:-9999px;top:0';
+      document.body.appendChild(picker);
+      picker.addEventListener('change', () => {
+        if (picker.value) { inp.value = fmtDate(picker.value); inp.dispatchEvent(new Event('change', { bubbles: true })); }
+        picker.remove();
+      }, { once: true });
+      try { picker.showPicker(); } catch { picker.focus(); picker.click(); }
+    });
+    wrap.appendChild(btn);
+  });
+}
+attachDatePickers();
+new MutationObserver(attachDatePickers).observe(document.body, { childList: true, subtree: true });
 
 // ponytail: PUT /api/budgets pisa toda la fila; siempre mandar los 3 campos.
 function collectCats() {
