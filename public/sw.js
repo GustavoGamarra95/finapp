@@ -1,5 +1,5 @@
 // ponytail: stale-while-revalidate, un solo cache. Bump CACHE para invalidar.
-const CACHE = 'finapp-v9';
+const CACHE = 'finapp-v10';
 const SHELL = [
   './',
   './index.html',
@@ -28,6 +28,8 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET') return;
+  // API es datos mutables: siempre red, nunca cache.
+  if (new URL(req.url).pathname.startsWith('/api/')) return;
   e.respondWith(
     caches.match(req).then(hit => {
       const net = fetch(req).then(res => {
