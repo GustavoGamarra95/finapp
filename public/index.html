@@ -177,7 +177,7 @@
         <input type="text" name="creditor" placeholder="Acreedor" required class="input col-span-2 md:col-span-2" maxlength="60">
         <input type="number" name="amount" placeholder="Monto total (₲)" min="1" step="1" required inputmode="numeric" class="input col-span-1 md:col-span-1">
         <input type="number" name="cuota_amount" placeholder="Monto por cuota (₲)" min="1" step="1" inputmode="numeric" class="input col-span-1 md:col-span-1" title="Se autocompleta con total ÷ N cuotas">
-        <input type="date" name="due" required class="input col-span-1 md:col-span-1" aria-label="Vencimiento">
+        <input type="date" name="due" required class="input col-span-1 md:col-span-1" aria-label="Fecha 1ª cuota" title="Fecha de la primera cuota; las siguientes se calculan mensualmente">
         <input type="text" name="installments" placeholder="N cuotas (ej: 10)" class="input col-span-1 md:col-span-1" maxlength="12">
         <button class="btn-primary col-span-2 md:col-span-1">Agregar</button>
         <p data-cuota-warn class="text-xs text-amber-600 col-span-2 md:col-span-7 hidden"></p>
@@ -285,7 +285,7 @@
       <input type="text"   name="creditor"     required maxlength="60" class="input col-span-2" placeholder="Acreedor">
       <input type="number" name="amount"       required min="1" step="1" inputmode="numeric" class="input col-span-1" placeholder="Monto total (₲)">
       <input type="number" name="cuota_amount" min="1" step="1" inputmode="numeric" class="input col-span-1" placeholder="Monto por cuota (₲)" title="Se autocompleta con total ÷ N cuotas">
-      <input type="date"   name="due"          required class="input col-span-1" aria-label="Vencimiento">
+      <input type="date"   name="due"          required class="input col-span-1" aria-label="Fecha 1ª cuota" title="Fecha de la primera cuota; las siguientes se calculan mensualmente">
       <input type="text"   name="installments" maxlength="12" class="input col-span-1" placeholder="N cuotas (ej: 10)">
     </div>
     <p data-cuota-warn class="text-xs text-amber-600 mt-2 hidden"></p>
@@ -582,6 +582,12 @@ function renderDebtDetail(id) {
   const body = $('#debt-detail-body');
   if (!d) { body.innerHTML = '<p class="text-sm text-slate-500">Deuda ya no existe.</p>'; return; }
   const N = cuotaCount(d.installments);
+  const { paid: paidSet } = paidCuotasView(d, N);
+  let nextN = null;
+  for (let i = 1; i <= N; i++) if (!paidSet.has(i)) { nextN = i; break; }
+  const nextLine = nextN
+    ? `<div class="mt-1 text-xs text-slate-500">Próxima cuota impaga: <span class="font-medium text-ink">Cuota ${nextN}/${N}</span> · vence ${addMonthsIso(d.due, nextN - 1)} · ${fmt(cuotaAmt(d, nextN, N))}</div>`
+    : '';
   body.innerHTML = `
     <div class="flex justify-between items-start gap-3">
       <div class="min-w-0">
@@ -601,6 +607,7 @@ function renderDebtDetail(id) {
       <span>Pagado ${fmt(d.paid)}</span><span>${d.pctPaid.toFixed(0)}%</span>
     </div>
     ${renderCuotas(d)}
+    ${nextLine}
     ${d.remaining > 0 ? `
       <form class="mt-3 grid grid-cols-3 gap-2" data-pay-debt="${esc(d.id)}">
         <input type="number" name="amount" placeholder="Abonar (₲)" min="1" max="${d.remaining}" step="1" required inputmode="numeric" class="input col-span-2">
@@ -748,6 +755,11 @@ function renderExpenses() {
 
 // ponytail: espeja parseInstallments del backend (primer int, default 1).
 const cuotaCount = s => { const n = parseInt(String(s || '').trim(), 10); return Number.isFinite(n) && n > 0 ? n : 1; };
+const addMonthsIso = (dateStr, add) => {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1 + add, d));
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
+};
 const cuotaAmt = (d, n, N) => {
   const per = d.cuota_amount && d.cuota_amount > 0 ? d.cuota_amount : Math.round(d.amount / N);
   return n < N ? per : Math.max(0, d.amount - per * (N - 1));
@@ -780,13 +792,14 @@ function renderCuotas(d) {
   const chips = Array.from({ length: N }, (_, i) => {
     const n = i + 1;
     const amt = cuotaAmt(d, n, N);
+    const due = addMonthsIso(d.due, n - 1);
     if (paid.has(n) && tagged.has(n)) {
-      return `<button type="button" data-uncheck-cuota="${esc(d.id)}:${n}" class="badge bg-emerald-100 text-emerald-700 hover:bg-red-100 hover:text-red-700 transition" title="Cuota ${n} · ${fmt(amt)} · pagada — clic para desmarcar">✓ ${n}/${N}</button>`;
+      return `<button type="button" data-uncheck-cuota="${esc(d.id)}:${n}" class="badge bg-emerald-100 text-emerald-700 hover:bg-red-100 hover:text-red-700 transition" title="Cuota ${n}/${N} · vence ${due} · ${fmt(amt)} · pagada (clic para desmarcar)">✓ ${n}/${N}</button>`;
     }
     if (paid.has(n)) {
-      return `<span class="badge bg-emerald-50 text-emerald-700" title="Cuota ${n} · ${fmt(amt)} · cubierta por abono general">✓ ${n}/${N}</span>`;
+      return `<span class="badge bg-emerald-50 text-emerald-700" title="Cuota ${n}/${N} · vence ${due} · ${fmt(amt)} · cubierta por abono general">✓ ${n}/${N}</span>`;
     }
-    return `<button type="button" data-check-cuota="${esc(d.id)}:${n}" class="badge bg-slate-100 text-slate-600 hover:bg-emerald-100 hover:text-emerald-700 transition" title="Marcar cuota ${n} como pagada (${fmt(amt)})">☐ ${n}/${N}</button>`;
+    return `<button type="button" data-check-cuota="${esc(d.id)}:${n}" class="badge bg-slate-100 text-slate-600 hover:bg-emerald-100 hover:text-emerald-700 transition" title="Cuota ${n}/${N} · vence ${due} · ${fmt(amt)} · clic para pagar">☐ ${n}/${N}</button>`;
   }).join('');
   return `<div class="mt-3 flex flex-wrap gap-1.5">${chips}</div>`;
 }
