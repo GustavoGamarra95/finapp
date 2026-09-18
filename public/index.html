@@ -1000,7 +1000,7 @@ function openEditDebt(id) {
   dlg.showModal();
 }
 
-// ponytail: sync bidireccional total ↔ cuota vía N; backend sigue guardando sólo amount.
+// ponytail: total y cuota son independientes; sólo mostramos aviso si no cuadran con N.
 function wireDebtAmountSync(form) {
   const amt = form.querySelector('[name=amount]');
   const cuota = form.querySelector('[name=cuota_amount]');
@@ -1012,29 +1012,16 @@ function wireDebtAmountSync(form) {
     if (!warn) return;
     const n = N(), a = +amt.value, c = +cuota.value;
     if (n > 1 && a > 0 && c > 0 && c * n !== a) {
-      const per = c, last = a - per * (n - 1);
-      warn.textContent = `Redondeo: ${n - 1} × ${fmt(per)} + ${fmt(last)} = ${fmt(a)} (última cuota compensa).`;
+      const last = a - c * (n - 1);
+      warn.textContent = `No cuadra: ${n} × ${fmt(c)} = ${fmt(c * n)} (total ingresado: ${fmt(a)}). Última cuota compensaría con ${fmt(last)}.`;
       warn.classList.remove('hidden');
     } else {
       warn.classList.add('hidden');
     }
   };
-  amt.addEventListener('input', () => {
-    const n = N();
-    if (n >= 1 && amt.value) cuota.value = Math.round(+amt.value / n);
-    refreshWarn();
-  });
-  cuota.addEventListener('input', () => {
-    const n = N();
-    if (n >= 1 && cuota.value) amt.value = Math.round(+cuota.value * n);
-    refreshWarn();
-  });
-  inst.addEventListener('input', () => {
-    const n = N();
-    if (amt.value) cuota.value = Math.round(+amt.value / n);
-    else if (cuota.value) amt.value = Math.round(+cuota.value * n);
-    refreshWarn();
-  });
+  amt.addEventListener('input', refreshWarn);
+  cuota.addEventListener('input', refreshWarn);
+  inst.addEventListener('input', refreshWarn);
   form.addEventListener('reset', () => setTimeout(refreshWarn, 0));
   form._refreshCuotaWarn = refreshWarn;
 }
