@@ -20,7 +20,8 @@ const db = createClient({
 
 // ============ Utilidades ============
 const uid      = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+// ponytail: TZ fija Paraguay para que Vercel (UTC) no adelante el día.
+const todayStr = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Asuncion' });
 const ymOf      = d => d.slice(0, 7);
 const currentYm = () => todayStr().slice(0, 7);
 function prevYm() {
@@ -28,7 +29,11 @@ function prevYm() {
   const dt = new Date(y, m - 2, 1);
   return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`;
 }
-const daysBetween = (a, b) => Math.round((new Date(b + 'T00:00:00') - new Date(a + 'T00:00:00')) / 86400000);
+const daysBetween = (a, b) => {
+  const [ya, ma, da] = a.split('-').map(Number);
+  const [yb, mb, db] = b.split('-').map(Number);
+  return Math.round((Date.UTC(yb, mb - 1, db) - Date.UTC(ya, ma - 1, da)) / 86400000);
+};
 const b64u    = s => Buffer.from(s).toString('base64url');
 const b64uDec = s => Buffer.from(s, 'base64url').toString();
 
