@@ -293,6 +293,16 @@
   </form>
 </dialog>
 
+<dialog id="debt-detail-dialog" class="rounded-xl p-0 w-[min(92vw,32rem)] shadow-xl border border-slate-200">
+  <div class="p-5">
+    <div class="flex justify-between items-start gap-3 mb-3">
+      <h3 class="font-semibold text-lg">Detalle de deuda</h3>
+      <button type="button" data-cancel class="text-slate-400 hover:text-ink text-xl leading-none" aria-label="Cerrar">×</button>
+    </div>
+    <div id="debt-detail-body"></div>
+  </div>
+</dialog>
+
 <dialog id="edit-payment-dialog" class="rounded-xl p-0 w-[min(92vw,22rem)] shadow-xl border border-slate-200">
   <form id="edit-payment-form" class="p-5">
     <h3 class="font-semibold text-lg mb-3">Editar pago</h3>
@@ -464,6 +474,8 @@ function render() {
   renderDebts();
   renderBudgets();
   renderGoogle();
+  const detailDlg = $('#debt-detail-dialog');
+  if (detailDlg?.open && detailDlg.dataset.id) renderDebtDetail(detailDlg.dataset.id);
 }
 
 function renderGoogle() {
@@ -548,7 +560,7 @@ function renderUpcoming(items) {
     return;
   }
   el.innerHTML = items.map(d => `
-    <div class="flex items-center justify-between py-2 border-b border-slate-100 last:border-0">
+    <button type="button" data-open-debt="${esc(d.id)}" class="w-full text-left flex items-center justify-between py-2 border-b border-slate-100 last:border-0 hover:bg-slate-50 transition rounded px-1 -mx-1">
       <div class="min-w-0">
         <div class="font-medium truncate">${esc(d.creditor)}</div>
         <div class="text-xs text-slate-500">${d.due}${d.installments ? ' · ' + esc(d.installments) : ''}</div>
@@ -557,8 +569,60 @@ function renderUpcoming(items) {
         <div class="text-sm font-semibold">${fmt(d.remaining)}</div>
         <span class="badge ${STATUS_CLS[d.status.level] || ''} mt-0.5">${esc(d.status.label)}</span>
       </div>
-    </div>
+    </button>
   `).join('');
+}
+
+function renderDebtDetail(id) {
+  const d = findDebt(id);
+  const body = $('#debt-detail-body');
+  if (!d) { body.innerHTML = '<p class="text-sm text-slate-500">Deuda ya no existe.</p>'; return; }
+  const N = cuotaCount(d.installments);
+  body.innerHTML = `
+    <div class="flex justify-between items-start gap-3">
+      <div class="min-w-0">
+        <div class="font-semibold truncate">${esc(d.creditor)}</div>
+        <div class="text-xs text-slate-500 mt-0.5">Vence ${d.due}${d.installments ? ' · Cuota ' + esc(d.installments) : ''}</div>
+      </div>
+      <div class="text-right shrink-0">
+        <div class="text-lg font-semibold">${fmt(d.remaining)}</div>
+        <div class="text-[11px] text-slate-500">de ${fmt(d.amount)}</div>
+        <span class="badge ${STATUS_CLS[d.status.level] || ''} mt-1">${esc(d.status.label)}</span>
+      </div>
+    </div>
+    <div class="mt-3 h-2 bg-slate-100 rounded overflow-hidden">
+      <div class="h-full bg-primary transition-all duration-500" style="width:${d.pctPaid}%"></div>
+    </div>
+    <div class="mt-1 text-[11px] text-slate-500 flex justify-between">
+      <span>Pagado ${fmt(d.paid)}</span><span>${d.pctPaid.toFixed(0)}%</span>
+    </div>
+    ${renderCuotas(d)}
+    ${d.remaining > 0 ? `
+      <form class="mt-3 grid grid-cols-3 gap-2" data-pay-debt="${esc(d.id)}">
+        <input type="number" name="amount" placeholder="Abonar (₲)" min="1" max="${d.remaining}" step="1" required inputmode="numeric" class="input col-span-2">
+        <input type="date" name="date" value="${view.today}" required class="input col-span-1">
+        <button class="btn-primary col-span-3">Registrar pago</button>
+      </form>` : ''}
+    ${d.payments.length ? `
+      <div class="mt-3">
+        <div class="text-xs text-slate-500 mb-1">Historial de pagos (${d.payments.length})</div>
+        <ul class="text-sm divide-y divide-slate-100 border-t border-slate-100">
+          ${d.payments.map(p => `
+            <li class="flex justify-between items-center py-1.5">
+              <span class="text-slate-600">${p.date}${p.cuota_n ? ` · Cuota ${p.cuota_n}` : ''}</span>
+              <span class="flex items-center gap-3">
+                <span class="font-medium">${fmt(p.amount)}</span>
+                <button class="text-slate-300 hover:text-primary transition" data-edit-payment="${esc(d.id)}:${p.id}" title="Editar pago" aria-label="Editar pago">✎</button>
+                <button class="text-slate-300 hover:text-red-600 transition" data-del-payment="${esc(d.id)}:${p.id}" title="Borrar pago" aria-label="Borrar pago">✕</button>
+              </span>
+            </li>`).join('')}
+        </ul>
+      </div>` : ''}
+    <div class="mt-4 flex justify-end gap-2">
+      <button type="button" class="btn-ghost" data-edit-debt="${esc(d.id)}">Editar deuda</button>
+      <button type="button" class="btn-ghost" data-cancel>Cerrar</button>
+    </div>
+  `;
 }
 
 function renderCategoryChart(entries) {
@@ -678,6 +742,48 @@ function renderExpenses() {
   `).join('');
 }
 
+// ponytail: espeja parseInstallments del backend (primer int, default 1).
+const cuotaCount = s => { const n = parseInt(String(s || '').trim(), 10); return Number.isFinite(n) && n > 0 ? n : 1; };
+const cuotaAmt = (d, n, N) => { const per = Math.round(d.amount / N); return n < N ? per : d.amount - per * (N - 1); };
+
+// Hybrid: cuota paga = tag explícito OR cubierta por abonos sin taggear.
+function paidCuotasView(d, N) {
+  const tagged = new Map();
+  let taggedSum = 0;
+  for (const p of d.payments) {
+    if (p.cuota_n && p.cuota_n >= 1 && p.cuota_n <= N) {
+      tagged.set(p.cuota_n, p);
+      taggedSum += p.amount;
+    }
+  }
+  const paid = new Set(tagged.keys());
+  let pool = Math.max(0, d.paid - taggedSum);
+  for (let n = 1; n <= N; n++) {
+    if (paid.has(n)) continue;
+    const cost = cuotaAmt(d, n, N);
+    if (pool >= cost) { paid.add(n); pool -= cost; }
+  }
+  return { paid, tagged };
+}
+
+function renderCuotas(d) {
+  const N = cuotaCount(d.installments);
+  if (N <= 1) return '';
+  const { paid, tagged } = paidCuotasView(d, N);
+  const chips = Array.from({ length: N }, (_, i) => {
+    const n = i + 1;
+    const amt = cuotaAmt(d, n, N);
+    if (paid.has(n) && tagged.has(n)) {
+      return `<button type="button" data-uncheck-cuota="${esc(d.id)}:${n}" class="badge bg-emerald-100 text-emerald-700 hover:bg-red-100 hover:text-red-700 transition" title="Cuota ${n} · ${fmt(amt)} · pagada — clic para desmarcar">✓ ${n}/${N}</button>`;
+    }
+    if (paid.has(n)) {
+      return `<span class="badge bg-emerald-50 text-emerald-700" title="Cuota ${n} · ${fmt(amt)} · cubierta por abono general">✓ ${n}/${N}</span>`;
+    }
+    return `<button type="button" data-check-cuota="${esc(d.id)}:${n}" class="badge bg-slate-100 text-slate-600 hover:bg-emerald-100 hover:text-emerald-700 transition" title="Marcar cuota ${n} como pagada (${fmt(amt)})">☐ ${n}/${N}</button>`;
+  }).join('');
+  return `<div class="mt-3 flex flex-wrap gap-1.5">${chips}</div>`;
+}
+
 function renderDebts() {
   const list = $('#debt-list');
   if (!view.debts.length) {
@@ -705,6 +811,8 @@ function renderDebts() {
         <span>Pagado ${fmt(d.paid)}</span><span>${d.pctPaid.toFixed(0)}%</span>
       </div>
 
+      ${renderCuotas(d)}
+
       ${d.remaining > 0 ? `
         <form class="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2" data-pay-debt="${esc(d.id)}">
           <input type="number" name="amount" placeholder="Abonar (₲)" min="1" max="${d.remaining}" step="1" required inputmode="numeric" class="input col-span-1 md:col-span-2">
@@ -718,7 +826,7 @@ function renderDebts() {
           <ul class="mt-2 text-sm divide-y divide-slate-100 border-t border-slate-100 pt-1">
             ${d.payments.map(p => `
               <li class="flex justify-between items-center py-1.5">
-                <span class="text-slate-600">${p.date}</span>
+                <span class="text-slate-600">${p.date}${p.cuota_n ? ` · Cuota ${p.cuota_n}` : ''}</span>
                 <span class="flex items-center gap-3">
                   <span class="font-medium">${fmt(p.amount)}</span>
                   <button class="text-slate-300 hover:text-primary transition" data-edit-payment="${esc(d.id)}:${p.id}" title="Editar pago" aria-label="Editar pago">✎</button>
@@ -796,8 +904,41 @@ $('#debt-form').addEventListener('submit', async e => {
 });
 
 document.addEventListener('click', async e => {
-  const t = e.target.closest('[data-del-expense],[data-del-debt],[data-del-payment],[data-edit-expense],[data-edit-debt],[data-edit-payment]');
+  const openBtn = e.target.closest('[data-open-debt]');
+  if (openBtn) {
+    const id = openBtn.dataset.openDebt;
+    const dlg = $('#debt-detail-dialog');
+    dlg.dataset.id = id;
+    renderDebtDetail(id);
+    if (!dlg.open) dlg.showModal();
+    return;
+  }
+  const t = e.target.closest('[data-del-expense],[data-del-debt],[data-del-payment],[data-edit-expense],[data-edit-debt],[data-edit-payment],[data-check-cuota],[data-uncheck-cuota]');
   if (!t) return;
+  if (t.dataset.checkCuota) {
+    const [did, nStr] = t.dataset.checkCuota.split(':');
+    const d = findDebt(did);
+    if (!d) return;
+    const N = cuotaCount(d.installments);
+    const n = Number(nStr);
+    const amount = cuotaAmt(d, n, N);
+    if (amount <= 0) return;
+    if (await mutate(`/api/debts/${encodeURIComponent(did)}/payments`, {
+      method: 'POST',
+      body: JSON.stringify({ amount, date: view.today, cuota_n: n }),
+    })) toast(`Cuota ${n}/${N} pagada`);
+    return;
+  }
+  if (t.dataset.uncheckCuota) {
+    const [did, nStr] = t.dataset.uncheckCuota.split(':');
+    const n = Number(nStr);
+    const d = findDebt(did);
+    const p = d && d.payments.find(x => x.cuota_n === n);
+    if (!p) return;
+    if (!confirm(`¿Desmarcar cuota ${n}? Se borrará el pago de ${fmt(p.amount)}.`)) return;
+    if (await mutate(`/api/debts/${encodeURIComponent(did)}/payments/${encodeURIComponent(p.id)}`, { method: 'DELETE' })) toast(`Cuota ${n} desmarcada`);
+    return;
+  }
   if (t.dataset.delExpense) {
     if (await mutate(`/api/expenses/${encodeURIComponent(t.dataset.delExpense)}`, { method: 'DELETE' })) toast('Gasto borrado');
   } else if (t.dataset.delDebt) {
