@@ -1,8 +1,12 @@
 import { createClient } from '@libsql/client';
 import { randomBytes, createHmac, timingSafeEqual } from 'node:crypto';
+import { waitUntil } from '@vercel/functions';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-only-change-me';
 const CATEGORIES = ['Comida', 'Transporte', 'Servicios', 'Vivienda', 'Salud', 'Ocio', 'Otro'];
+// ponytail: clasificación 50/30/20 hardcoded, "Otro" no cuenta como ninguno.
+const NEEDS_CATS = new Set(['Comida', 'Transporte', 'Servicios', 'Vivienda', 'Salud']);
+const WANTS_CATS = new Set(['Ocio']);
 
 const GOOGLE_CLIENT_ID     = process.env.GOOGLE_CLIENT_ID || '';
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
@@ -99,7 +103,8 @@ async function ensureBootstrap() {
     `CREATE TABLE IF NOT EXISTS budgets (
       username TEXT PRIMARY KEY REFERENCES users(username),
       overall  INTEGER NOT NULL DEFAULT 0,
-      cats     TEXT NOT NULL DEFAULT '{}'
+      cats     TEXT NOT NULL DEFAULT '{}',
+      income   INTEGER NOT NULL DEFAULT 0
     )`,
     `CREATE TABLE IF NOT EXISTS google_tokens (
       username      TEXT PRIMARY KEY REFERENCES users(username),
@@ -115,11 +120,18 @@ async function ensureBootstrap() {
       event_id TEXT NOT NULL,
       PRIMARY KEY (debt_id, cuota_n)
     )`,
+    `CREATE TABLE IF NOT EXISTS incomes (
+      username TEXT NOT NULL REFERENCES users(username),
+      ym       TEXT NOT NULL,
+      amount   INTEGER NOT NULL CHECK (amount >= 0),
+      PRIMARY KEY (username, ym)
+    )`,
   ], 'write');
   // ponytail: migraciones idempotentes para instalaciones legacy.
   try { await db.execute('ALTER TABLE payments ADD COLUMN cuota_n INTEGER'); } catch {}
   try { await db.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_debt_cuota ON payments(debt_id, cuota_n) WHERE cuota_n IS NOT NULL'); } catch {}
   try { await db.execute('ALTER TABLE debts ADD COLUMN cuota_amount INTEGER'); } catch {}
+  try { await db.execute('ALTER TABLE budgets ADD COLUMN income INTEGER NOT NULL DEFAULT 0'); } catch {}
   bootstrapped = true;
 }
 
@@ -181,13 +193,15 @@ async function buildView(username, filters = {}) {
   const from  = filters.from || '';
   const to    = filters.to || '';
 
-  const [expRes, debtsRes, paysRes, budgetRes, gRes] = await Promise.all([
+  const [expRes, debtsRes, paysRes, budgetRes, gRes, incomeRes] = await Promise.all([
     db.execute({ sql: 'SELECT id, date, descr AS "desc", category, amount FROM expenses WHERE username = ?', args: [username] }),
     db.execute({ sql: 'SELECT id, creditor, amount, due, installments, cuota_amount FROM debts WHERE username = ?', args: [username] }),
     db.execute({ sql: 'SELECT p.id, p.debt_id, p.date, p.amount, p.cuota_n FROM payments p JOIN debts d ON d.id = p.debt_id WHERE d.username = ? ORDER BY p.date DESC, p.id DESC', args: [username] }),
-    db.execute({ sql: 'SELECT overall, cats FROM budgets WHERE username = ?', args: [username] }),
+    db.execute({ sql: 'SELECT overall, cats, income FROM budgets WHERE username = ?', args: [username] }),
     db.execute({ sql: 'SELECT email FROM google_tokens WHERE username = ?', args: [username] }),
+    db.execute({ sql: 'SELECT ym, amount FROM incomes WHERE username = ?', args: [username] }),
   ]);
+  const incomeByYm = Object.fromEntries(incomeRes.rows.map(r => [r.ym, Number(r.amount)]));
   const allExpenses = expRes.rows.map(r => ({ id: r.id, date: r.date, desc: r.desc, category: r.category, amount: Number(r.amount) }));
 
   let filtered = allExpenses;
@@ -228,23 +242,31 @@ async function buildView(username, filters = {}) {
     const pays = paysByDebt[d.id] || [];
     const paid = pays.reduce((s, p) => s + p.amount, 0);
     const remaining = Math.max(0, amount - paid);
+    const cuota_amount = d.cuota_amount == null ? null : Number(d.cuota_amount);
+    // Fecha de la próxima cuota impaga (o due original si N=1 / todo pagado).
+    const N = parseInstallments(d.installments);
+    const paidSet = paidCuotasSet({ amount, installments: d.installments, cuota_amount, paid, taggedByCuota: Object.fromEntries(pays.filter(p => p.cuota_n).map(p => [p.cuota_n, p.amount])) });
+    let nextN = 0; for (let n = 1; n <= N; n++) if (!paidSet.has(n)) { nextN = n; break; }
+    const nextDue = nextN ? addMonthsIso(d.due, nextN - 1) : d.due;
     return {
-      id: d.id, creditor: d.creditor, amount, due: d.due, installments: d.installments,
-      cuota_amount: d.cuota_amount == null ? null : Number(d.cuota_amount),
+      id: d.id, creditor: d.creditor, amount, due: d.due, nextDue, nextN, installments: d.installments,
+      cuota_amount,
       payments: pays, paid, remaining,
       pctPaid: amount > 0 ? (paid / amount) * 100 : 100,
-      status: debtStatus(remaining, d.due),
+      status: debtStatus(remaining, nextDue),
     };
   }).sort((a, b) => {
     if ((a.remaining === 0) !== (b.remaining === 0)) return a.remaining === 0 ? 1 : -1;
-    return a.due.localeCompare(b.due);
+    return a.nextDue.localeCompare(b.nextDue);
   });
   const activeDebts = debts.filter(d => d.remaining > 0);
   const debtTotal = activeDebts.reduce((s, d) => s + d.remaining, 0);
-  const upcoming = activeDebts.slice().sort((a, b) => a.due.localeCompare(b.due)).slice(0, 5);
+  const upcoming = activeDebts.slice().sort((a, b) => a.nextDue.localeCompare(b.nextDue)).slice(0, 5);
 
-  const bRow = budgetRes.rows[0] || { overall: 0, cats: '{}' };
+  const bRow = budgetRes.rows[0] || { overall: 0, cats: '{}', income: 0 };
   const overall = Number(bRow.overall) || 0;
+  const incomeDefault = Number(bRow.income) || 0;
+  const income = incomeByYm[curYm] ?? incomeDefault;
   const bCats = JSON.parse(bRow.cats || '{}');
   const overallStatus = budgetLevel(monthSum, overall);
   const byCat = {};
@@ -267,6 +289,42 @@ async function buildView(username, filters = {}) {
     trend.push({ ym: monthYm, label: dt.toLocaleDateString('es-PY', { month: 'short' }), value });
   }
 
+  // Salud económica: 50/30/20 + DTI.
+  const monthlyDebtLoad = activeDebts.reduce((s, d) => {
+    const N = parseInstallments(d.installments);
+    const per = d.cuota_amount && d.cuota_amount > 0 ? d.cuota_amount : Math.round(d.amount / N);
+    return s + per;
+  }, 0);
+  const monthExpenses = allExpenses.filter(e => e.date.startsWith(curYm));
+  const needsSum = monthExpenses.filter(e => NEEDS_CATS.has(e.category)).reduce((s, e) => s + e.amount, 0) + monthlyDebtLoad;
+  const wantsSum = monthExpenses.filter(e => WANTS_CATS.has(e.category)).reduce((s, e) => s + e.amount, 0);
+  const otherSum = monthExpenses.filter(e => !NEEDS_CATS.has(e.category) && !WANTS_CATS.has(e.category)).reduce((s, e) => s + e.amount, 0);
+  const commitments = monthSum + monthlyDebtLoad;
+  const savings     = income - commitments;
+  const pct = (n) => income > 0 ? (n / income) * 100 : null;
+  const savingsRate = pct(savings);
+  const dtiRatio    = pct(monthlyDebtLoad);
+  const needsRate   = pct(needsSum);
+  const wantsRate   = pct(wantsSum);
+  const healthLevel = income === 0 ? 'unset'
+    : savings < 0 || dtiRatio > 45 ? 'critical'
+    : (savingsRate >= 15 && needsRate <= 55 && wantsRate <= 35 && dtiRatio <= 30) ? 'healthy'
+    : 'warning';
+  const healthLabel = {
+    unset:    'Cargá tu ingreso mensual para ver tu salud financiera.',
+    healthy:  'Sana: cumplís 50/30/20 y tus cuotas son manejables.',
+    warning:  'Ajustada: alguna categoría se pasa del objetivo 50/30/20.',
+    critical: 'En rojo: gastás más de lo que entra o las cuotas te ahogan.',
+  }[healthLevel];
+  // Trend de salud 6 meses: usa incomes[ym] con fallback al último income conocido.
+  const healthTrend = trend.map(t => {
+    const inc = incomeByYm[t.ym] ?? incomeDefault;
+    const gasto = t.value;
+    const sav = inc - gasto - monthlyDebtLoad;
+    return { ym: t.ym, label: t.label, income: inc, expense: gasto, savings: sav, savingsRate: inc > 0 ? (sav / inc) * 100 : null };
+  });
+  const health = { income, monthlyDebtLoad, commitments, savings, savingsRate, dtiRatio, needsSum, wantsSum, otherSum, needsRate, wantsRate, level: healthLevel, label: healthLabel, trend: healthTrend };
+
   return {
     session:    { username },
     today:      todayStr(),
@@ -277,11 +335,11 @@ async function buildView(username, filters = {}) {
       monthSum, delta, avg, projection, daysInMonth,
       debtTotal, debtCount: activeDebts.length,
       budget: { overall, used: monthSum, pctUsed: overallStatus.pct, status: overallStatus },
-      categoryChart, trend, upcoming,
+      categoryChart, trend, upcoming, health,
     },
     expenses: { groups, flat: filtered, filteredCount: filtered.length, totalCount: allExpenses.length },
     debts,
-    budgets: { overall, categories: budgetCategories },
+    budgets: { overall, income, incomeMonths: healthTrend.map(t => ({ ym: t.ym, label: t.label, amount: incomeByYm[t.ym] ?? null })), categories: budgetCategories },
     google: { connected: gRes.rows.length > 0, email: gRes.rows[0]?.email || null, configured: !!GOOGLE_CLIENT_ID },
   };
 }
@@ -390,20 +448,42 @@ function cuotaEventBody(debt, n, N, isPaid) {
   };
 }
 async function calendarFetch(access, calendarId, path, opts = {}) {
-  return fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events${path}`, {
-    ...opts,
-    headers: { authorization: `Bearer ${access}`, 'content-type': 'application/json', ...(opts.headers || {}) },
-  });
+  const url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events${path}`;
+  const headers = { authorization: `Bearer ${access}`, 'content-type': 'application/json', ...(opts.headers || {}) };
+  // ponytail: retry 3x con backoff sólo en 429/5xx y errores de red.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const r = await fetch(url, { ...opts, headers });
+      if (r.status !== 429 && r.status < 500) return r;
+      if (attempt === 2) return r;
+    } catch (e) {
+      if (attempt === 2) throw e;
+    }
+    await new Promise(res => setTimeout(res, 500 * (attempt + 1)));
+  }
 }
-async function syncDebtEvent(username, debt) {
+// ponytail: envuelve promesas para que Vercel espere sin bloquear la respuesta.
+const bg = (p) => { waitUntil(p.catch(e => console.error('bg task failed:', e.message))); };
+
+async function syncDebtEvent(username, debt, onlyCuotas = null) {
   const tok = await getValidAccessToken(username);
   if (!tok) return;
   const N = parseInstallments(debt.installments);
   const paidSet = paidCuotasSet(debt);
   const existing = await db.execute({ sql: 'SELECT cuota_n, event_id FROM debt_events WHERE debt_id = ?', args: [debt.id] });
   const byN = new Map(existing.rows.map(r => [Number(r.cuota_n), r.event_id]));
+  // ponytail: en modo incremental, sumamos la próxima impaga para refrescar su "pendiente" en Calendar.
+  let targets;
+  if (onlyCuotas) {
+    const s = new Set([...onlyCuotas].filter(n => n >= 1 && n <= N));
+    for (let n = 1; n <= N; n++) if (!paidSet.has(n)) { s.add(n); break; }
+    targets = [...s];
+  } else {
+    targets = Array.from({ length: N }, (_, i) => i + 1);
+  }
 
-  for (let n = 1; n <= N; n++) {
+  // ponytail: paralelo — Calendar API aguanta 500 req/100s, N típico < 50.
+  const upserts = targets.map(async n => {
     const body = JSON.stringify(cuotaEventBody(debt, n, N, paidSet.has(n)));
     try {
       if (byN.has(n)) {
@@ -415,44 +495,37 @@ async function syncDebtEvent(username, debt) {
           if (r2.ok) {
             const ev = await r2.json();
             await db.execute({ sql: 'INSERT INTO debt_events (debt_id, cuota_n, event_id) VALUES (?, ?, ?)', args: [debt.id, n, ev.id] });
-          } else {
-            console.error('calendar POST failed cuota', n, r2.status, (await r2.text()).slice(0, 200));
-          }
-        } else if (!r.ok) {
-          console.error('calendar PUT failed cuota', n, r.status, (await r.text()).slice(0, 200));
-        }
+          } else console.error('calendar POST failed cuota', n, r2.status, (await r2.text()).slice(0, 200));
+        } else if (!r.ok) console.error('calendar PUT failed cuota', n, r.status, (await r.text()).slice(0, 200));
       } else {
         const r = await calendarFetch(tok.access_token, tok.calendar_id, '', { method: 'POST', body });
         if (r.ok) {
           const ev = await r.json();
           await db.execute({ sql: 'INSERT INTO debt_events (debt_id, cuota_n, event_id) VALUES (?, ?, ?)', args: [debt.id, n, ev.id] });
-        } else {
-          console.error('calendar POST failed cuota', n, r.status, (await r.text()).slice(0, 200));
-        }
+        } else console.error('calendar POST failed cuota', n, r.status, (await r.text()).slice(0, 200));
       }
-    } catch (e) {
-      console.error('calendar sync failed cuota', n, e.message);
-    }
-  }
+    } catch (e) { console.error('calendar sync failed cuota', n, e.message); }
+  });
 
-  // Cuotas de más (usuario redujo N): borrar en Calendar y DB.
-  for (const [n, eid] of byN) {
-    if (n <= N) continue;
+  // Cuotas de más (usuario redujo N): borrar en Calendar y DB en paralelo. Sólo en resync completo.
+  const deletes = onlyCuotas ? [] : [...byN].filter(([n]) => n > N).map(async ([n, eid]) => {
     try {
       await calendarFetch(tok.access_token, tok.calendar_id, `/${encodeURIComponent(eid)}`, { method: 'DELETE' });
     } catch (e) { console.error('calendar delete extra cuota', n, e.message); }
     await db.execute({ sql: 'DELETE FROM debt_events WHERE debt_id = ? AND cuota_n = ?', args: [debt.id, n] });
-  }
+  });
+
+  await Promise.all([...upserts, ...deletes]);
 }
 async function removeDebtEvent(username, debtId) {
   const tok = await getValidAccessToken(username);
   if (!tok) return;
   const r = await db.execute({ sql: 'SELECT event_id FROM debt_events WHERE debt_id = ?', args: [debtId] });
-  for (const row of r.rows) {
+  await Promise.all(r.rows.map(async row => {
     try {
       await calendarFetch(tok.access_token, tok.calendar_id, `/${encodeURIComponent(row.event_id)}`, { method: 'DELETE' });
     } catch (e) { console.error('calendar delete failed:', e.message); }
-  }
+  }));
   await db.execute({ sql: 'DELETE FROM debt_events WHERE debt_id = ?', args: [debtId] });
 }
 async function fetchDebtForSync(debtId, username) {
@@ -526,12 +599,12 @@ export default async function handler(req, res) {
       });
       const jwtExp = Math.floor(Date.now() / 1000) + 30 * 86400;
       const token = jwtSign({ sub: username, exp: jwtExp });
-      // Sync inicial de deudas activas
+      // Sync inicial de deudas en background — el callback OAuth ya redirige.
       const debtsR = await db.execute({ sql: 'SELECT id FROM debts WHERE username = ?', args: [username] });
-      for (const row of debtsR.rows) {
+      bg(Promise.all(debtsR.rows.map(async row => {
         const d = await fetchDebtForSync(row.id, username);
         if (d) await syncDebtEvent(username, d);
-      }
+      })));
       res.setHeader('Set-Cookie', 'oauth_state=; Path=/; Max-Age=0');
       res.writeHead(302, { Location: `/?token=${encodeURIComponent(token)}&user=${encodeURIComponent(username)}` });
       return res.end();
@@ -574,7 +647,7 @@ export default async function handler(req, res) {
         args: [newId, user, d.creditor, d.amount, d.due, d.installments, d.cuota_amount],
       });
       const dSync = await fetchDebtForSync(newId, user);
-      if (dSync) await syncDebtEvent(user, dSync);
+      if (dSync) bg(syncDebtEvent(user, dSync));
       return sendView();
     }
     mm = p.match(/^\/api\/debts\/([^/]+)$/);
@@ -590,12 +663,13 @@ export default async function handler(req, res) {
         args: [d.creditor, d.amount, d.due, d.installments, d.cuota_amount, mm[1], user],
       });
       const dSync = await fetchDebtForSync(mm[1], user);
-      if (dSync) await syncDebtEvent(user, dSync);
+      if (dSync) bg(syncDebtEvent(user, dSync));
       return sendView();
     }
     if (mm && m === 'DELETE') {
-      await removeDebtEvent(user, mm[1]);
-      await db.execute({ sql: 'DELETE FROM debts WHERE id = ? AND username = ?', args: [mm[1], user] });
+      const debtId = mm[1];
+      await db.execute({ sql: 'DELETE FROM debts WHERE id = ? AND username = ?', args: [debtId, user] });
+      bg(removeDebtEvent(user, debtId));
       return sendView();
     }
 
@@ -616,7 +690,7 @@ export default async function handler(req, res) {
         throw e;
       }
       const dSync = await fetchDebtForSync(mm[1], user);
-      if (dSync) await syncDebtEvent(user, dSync);
+      if (dSync) bg(syncDebtEvent(user, dSync, pay.cuota_n ? new Set([pay.cuota_n]) : null));
       return sendView();
     }
 
@@ -625,8 +699,9 @@ export default async function handler(req, res) {
       const [, did, pid] = mm;
       const debtR = await db.execute({ sql: 'SELECT amount FROM debts WHERE id = ? AND username = ?', args: [did, user] });
       if (debtR.rows.length === 0) throw new HttpErr(404, 'deuda no encontrada');
-      const exR = await db.execute({ sql: 'SELECT 1 FROM payments WHERE id = ? AND debt_id = ?', args: [Number(pid), did] });
+      const exR = await db.execute({ sql: 'SELECT cuota_n FROM payments WHERE id = ? AND debt_id = ?', args: [Number(pid), did] });
       if (exR.rows.length === 0) throw new HttpErr(404, 'pago no encontrado');
+      const cuotaN = exR.rows[0].cuota_n == null ? null : Number(exR.rows[0].cuota_n);
       const othR = await db.execute({ sql: 'SELECT COALESCE(SUM(amount),0) AS s FROM payments WHERE debt_id = ? AND id != ?', args: [did, Number(pid)] });
       const room = Math.max(0, Number(debtR.rows[0].amount) - Number(othR.rows[0].s));
       const pay = validatePayment(body, room);
@@ -635,48 +710,68 @@ export default async function handler(req, res) {
         args: [pay.date, pay.amount, Number(pid), did],
       });
       const dSync = await fetchDebtForSync(did, user);
-      if (dSync) await syncDebtEvent(user, dSync);
+      if (dSync) bg(syncDebtEvent(user, dSync, cuotaN ? new Set([cuotaN]) : null));
       return sendView();
     }
     if (mm && m === 'DELETE') {
       const [, did, pid] = mm;
+      const payR = await db.execute({ sql: 'SELECT cuota_n FROM payments WHERE id = ? AND debt_id IN (SELECT id FROM debts WHERE id = ? AND username = ?)', args: [Number(pid), did, user] });
+      const cuotaN = payR.rows[0]?.cuota_n == null ? null : Number(payR.rows[0].cuota_n);
       await db.execute({
         sql: 'DELETE FROM payments WHERE id = ? AND debt_id IN (SELECT id FROM debts WHERE id = ? AND username = ?)',
         args: [Number(pid), did, user],
       });
       const dSync = await fetchDebtForSync(did, user);
-      if (dSync) await syncDebtEvent(user, dSync);
+      if (dSync) bg(syncDebtEvent(user, dSync, cuotaN ? new Set([cuotaN]) : null));
       return sendView();
     }
 
     if (m === 'PUT' && p === '/api/budgets') {
       const overall = Math.max(0, Math.floor(Number(body.overall || 0)));
+      const income  = Math.max(0, Math.floor(Number(body.income  || 0)));
       const cats = {};
       for (const [k, v] of Object.entries(body.categories || {})) {
         const n = Math.floor(Number(v));
         if (n > 0 && CATEGORIES.includes(k)) cats[k] = n;
       }
+      // budgets.income es el default; incomes[curYm] es la verdad del mes actual.
+      await db.batch([
+        { sql: `INSERT INTO budgets (username, overall, cats, income) VALUES (?, ?, ?, ?)
+                ON CONFLICT(username) DO UPDATE SET overall = excluded.overall, cats = excluded.cats, income = excluded.income`,
+          args: [user, overall, JSON.stringify(cats), income] },
+        { sql: `INSERT INTO incomes (username, ym, amount) VALUES (?, ?, ?)
+                ON CONFLICT(username, ym) DO UPDATE SET amount = excluded.amount`,
+          args: [user, currentYm(), income] },
+      ], 'write');
+      return sendView();
+    }
+
+    mm = p.match(/^\/api\/incomes\/(\d{4}-\d{2})$/);
+    if (mm && m === 'PUT') {
+      const amount = Math.max(0, Math.floor(Number(body.amount || 0)));
       await db.execute({
-        sql: `INSERT INTO budgets (username, overall, cats) VALUES (?, ?, ?)
-              ON CONFLICT(username) DO UPDATE SET overall = excluded.overall, cats = excluded.cats`,
-        args: [user, overall, JSON.stringify(cats)],
+        sql: `INSERT INTO incomes (username, ym, amount) VALUES (?, ?, ?)
+              ON CONFLICT(username, ym) DO UPDATE SET amount = excluded.amount`,
+        args: [user, mm[1], amount],
       });
       return sendView();
     }
 
     if (m === 'GET' && p === '/api/export') {
-      const [expR, debtR, payR, bR] = await Promise.all([
+      const [expR, debtR, payR, bR, incR] = await Promise.all([
         db.execute({ sql: 'SELECT id, date, descr AS "desc", category, amount FROM expenses WHERE username = ? ORDER BY date, id', args: [user] }),
         db.execute({ sql: 'SELECT id, creditor, amount, due, installments, cuota_amount FROM debts WHERE username = ? ORDER BY due, id', args: [user] }),
         db.execute({ sql: 'SELECT p.debt_id, p.date, p.amount FROM payments p JOIN debts d ON d.id = p.debt_id WHERE d.username = ? ORDER BY p.date, p.id', args: [user] }),
-        db.execute({ sql: 'SELECT overall, cats FROM budgets WHERE username = ?', args: [user] }),
+        db.execute({ sql: 'SELECT overall, cats, income FROM budgets WHERE username = ?', args: [user] }),
+        db.execute({ sql: 'SELECT ym, amount FROM incomes WHERE username = ? ORDER BY ym', args: [user] }),
       ]);
       const paysByDebt = {};
       for (const p of payR.rows) (paysByDebt[p.debt_id] ||= []).push({ date: p.date, amount: Number(p.amount) });
       const expenses = expR.rows.map(r => ({ id: r.id, date: r.date, desc: r.desc, category: r.category, amount: Number(r.amount) }));
       const debts = debtR.rows.map(d => ({ id: d.id, creditor: d.creditor, amount: Number(d.amount), due: d.due, installments: d.installments, cuota_amount: d.cuota_amount == null ? null : Number(d.cuota_amount), payments: paysByDebt[d.id] || [] }));
-      const b = bR.rows[0] || { overall: 0, cats: '{}' };
-      return res.status(200).json({ version: 2, expenses, debts, budgets: { overall: Number(b.overall), categories: JSON.parse(b.cats || '{}') } });
+      const b = bR.rows[0] || { overall: 0, cats: '{}', income: 0 };
+      const incomes = incR.rows.map(r => ({ ym: r.ym, amount: Number(r.amount) }));
+      return res.status(200).json({ version: 3, expenses, debts, budgets: { overall: Number(b.overall), income: Number(b.income) || 0, categories: JSON.parse(b.cats || '{}') }, incomes });
     }
 
     if (m === 'POST' && p === '/api/import') {
@@ -685,6 +780,7 @@ export default async function handler(req, res) {
         { sql: 'DELETE FROM payments WHERE debt_id IN (SELECT id FROM debts WHERE username = ?)', args: [user] },
         { sql: 'DELETE FROM debts WHERE username = ?', args: [user] },
         { sql: 'DELETE FROM expenses WHERE username = ?', args: [user] },
+        { sql: 'DELETE FROM incomes WHERE username = ?', args: [user] },
       ];
       for (const e of body.expenses) {
         try {
@@ -720,10 +816,18 @@ export default async function handler(req, res) {
         if (n > 0 && CATEGORIES.includes(k)) cats[k] = n;
       }
       stmts.push({
-        sql: `INSERT INTO budgets (username, overall, cats) VALUES (?, ?, ?)
-              ON CONFLICT(username) DO UPDATE SET overall = excluded.overall, cats = excluded.cats`,
-        args: [user, Math.max(0, Math.floor(Number(bBody.overall || 0))), JSON.stringify(cats)],
+        sql: `INSERT INTO budgets (username, overall, cats, income) VALUES (?, ?, ?, ?)
+              ON CONFLICT(username) DO UPDATE SET overall = excluded.overall, cats = excluded.cats, income = excluded.income`,
+        args: [user, Math.max(0, Math.floor(Number(bBody.overall || 0))), JSON.stringify(cats), Math.max(0, Math.floor(Number(bBody.income || 0)))],
       });
+      for (const inc of body.incomes || []) {
+        if (inc && /^\d{4}-\d{2}$/.test(inc.ym) && Number(inc.amount) >= 0) {
+          stmts.push({
+            sql: 'INSERT INTO incomes (username, ym, amount) VALUES (?, ?, ?)',
+            args: [user, inc.ym, Math.floor(Number(inc.amount))],
+          });
+        }
+      }
       await db.batch(stmts, 'write');
       return sendView();
     }
@@ -742,22 +846,23 @@ export default async function handler(req, res) {
 
     if (m === 'POST' && p === '/api/auth/google/resync') {
       const debtsR = await db.execute({ sql: 'SELECT id FROM debts WHERE username = ?', args: [user] });
-      for (const row of debtsR.rows) {
+      bg(Promise.all(debtsR.rows.map(async row => {
         const d = await fetchDebtForSync(row.id, user);
         if (d) await syncDebtEvent(user, d);
-      }
+      })));
       return sendView();
     }
 
     if (m === 'DELETE' && p === '/api/all') {
-      // Borrar eventos en Google Calendar antes de nukear las deudas.
+      // Borrar eventos en Google Calendar en background — la DB local se limpia primero.
       const debtsR = await db.execute({ sql: 'SELECT id FROM debts WHERE username = ?', args: [user] });
-      for (const row of debtsR.rows) await removeDebtEvent(user, row.id);
+      bg(Promise.all(debtsR.rows.map(row => removeDebtEvent(user, row.id))));
       await db.batch([
         { sql: 'DELETE FROM payments WHERE debt_id IN (SELECT id FROM debts WHERE username = ?)', args: [user] },
         { sql: 'DELETE FROM debts WHERE username = ?', args: [user] },
         { sql: 'DELETE FROM expenses WHERE username = ?', args: [user] },
         { sql: 'DELETE FROM budgets WHERE username = ?', args: [user] },
+        { sql: 'DELETE FROM incomes WHERE username = ?', args: [user] },
       ], 'write');
       return sendView();
     }
