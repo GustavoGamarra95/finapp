@@ -182,7 +182,7 @@
     <div class="card">
       <h2 class="font-semibold mb-3">Nuevo gasto</h2>
       <form id="expense-form" class="grid grid-cols-2 md:grid-cols-6 gap-2">
-        <input type="date" name="date" required class="input col-span-1 md:col-span-1" aria-label="Fecha">
+        <input type="text" inputmode="numeric" pattern="\d{2}/\d{2}/\d{4}" maxlength="10" placeholder="dd/mm/aaaa" name="date" required class="input col-span-1 md:col-span-1" aria-label="Fecha">
         <input type="text" name="desc" placeholder="Descripción" required class="input col-span-2 md:col-span-2" maxlength="80">
         <select name="category" class="input col-span-1 md:col-span-1" aria-label="Categoría"></select>
         <input type="number" name="amount" placeholder="Monto (₲)" min="1" step="1" required inputmode="numeric" class="input col-span-1 md:col-span-1">
@@ -195,8 +195,8 @@
         <input type="search" id="q" placeholder="Buscar por descripción o categoría" class="input col-span-2">
         <select id="f-cat" class="input"></select>
         <div class="grid grid-cols-2 gap-2 col-span-2 md:col-span-1">
-          <input type="date" id="f-from" class="input" title="Desde">
-          <input type="date" id="f-to" class="input" title="Hasta">
+          <input type="text" inputmode="numeric" pattern="\d{2}/\d{2}/\d{4}" maxlength="10" placeholder="dd/mm/aaaa" id="f-from" class="input" title="Desde">
+          <input type="text" inputmode="numeric" pattern="\d{2}/\d{2}/\d{4}" maxlength="10" placeholder="dd/mm/aaaa" id="f-to" class="input" title="Hasta">
         </div>
       </div>
       <div id="expense-list"></div>
@@ -211,7 +211,7 @@
         <input type="text" name="creditor" placeholder="Acreedor" required class="input col-span-2 md:col-span-2" maxlength="60">
         <input type="number" name="amount" placeholder="Monto total (₲)" min="1" step="1" required inputmode="numeric" class="input col-span-1 md:col-span-1">
         <input type="number" name="cuota_amount" placeholder="Monto por cuota (₲)" min="1" step="1" inputmode="numeric" class="input col-span-1 md:col-span-1" title="Se autocompleta con total ÷ N cuotas">
-        <input type="date" name="due" required class="input col-span-1 md:col-span-1" aria-label="Fecha 1ª cuota" title="Fecha de la primera cuota; las siguientes se calculan mensualmente">
+        <input type="text" inputmode="numeric" pattern="\d{2}/\d{2}/\d{4}" maxlength="10" placeholder="dd/mm/aaaa" name="due" required class="input col-span-1 md:col-span-1" aria-label="Fecha 1ª cuota" title="Fecha de la primera cuota; las siguientes se calculan mensualmente">
         <input type="text" name="installments" placeholder="N cuotas (ej: 10)" class="input col-span-1 md:col-span-1" maxlength="12">
         <button class="btn-primary col-span-2 md:col-span-1">Agregar</button>
         <p data-cuota-warn class="text-xs text-amber-600 col-span-2 md:col-span-7 hidden"></p>
@@ -311,7 +311,7 @@
   <form id="edit-expense-form" class="p-5">
     <h3 class="font-semibold text-lg mb-3">Editar gasto</h3>
     <div class="grid grid-cols-2 gap-2">
-      <input type="date"   name="date"     required class="input col-span-1" aria-label="Fecha">
+      <input type="text" inputmode="numeric" pattern="\d{2}/\d{2}/\d{4}" maxlength="10" placeholder="dd/mm/aaaa"   name="date"     required class="input col-span-1" aria-label="Fecha">
       <input type="number" name="amount"   required min="1" step="1" inputmode="numeric" class="input col-span-1" placeholder="Monto (₲)">
       <input type="text"   name="desc"     required maxlength="80" class="input col-span-2" placeholder="Descripción">
       <select              name="category" class="input col-span-2" aria-label="Categoría"></select>
@@ -331,7 +331,7 @@
       <input type="text"   name="creditor"     required maxlength="60" class="input col-span-2" placeholder="Acreedor">
       <input type="number" name="amount"       required min="1" step="1" inputmode="numeric" class="input col-span-1" placeholder="Monto total (₲)">
       <input type="number" name="cuota_amount" min="1" step="1" inputmode="numeric" class="input col-span-1" placeholder="Monto por cuota (₲)" title="Se autocompleta con total ÷ N cuotas">
-      <input type="date"   name="due"          required class="input col-span-1" aria-label="Fecha 1ª cuota" title="Fecha de la primera cuota; las siguientes se calculan mensualmente">
+      <input type="text" inputmode="numeric" pattern="\d{2}/\d{2}/\d{4}" maxlength="10" placeholder="dd/mm/aaaa"   name="due"          required class="input col-span-1" aria-label="Fecha 1ª cuota" title="Fecha de la primera cuota; las siguientes se calculan mensualmente">
       <input type="text"   name="installments" maxlength="12" class="input col-span-1" placeholder="N cuotas (ej: 10)">
     </div>
     <p data-cuota-warn class="text-xs text-amber-600 mt-2 hidden"></p>
@@ -357,7 +357,7 @@
   <form id="edit-payment-form" class="p-5">
     <h3 class="font-semibold text-lg mb-3">Editar pago</h3>
     <div class="grid grid-cols-2 gap-2">
-      <input type="date"   name="date"   required class="input col-span-1" aria-label="Fecha">
+      <input type="text" inputmode="numeric" pattern="\d{2}/\d{2}/\d{4}" maxlength="10" placeholder="dd/mm/aaaa"   name="date"   required class="input col-span-1" aria-label="Fecha">
       <input type="number" name="amount" required min="1" step="1" inputmode="numeric" class="input col-span-1" placeholder="Monto (₲)">
     </div>
     <div id="edit-payment-error" class="text-xs text-red-600 mt-2 hidden"></div>
@@ -467,6 +467,12 @@ function showLogin() {
 const $  = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 const fmt = n => (Math.round(+n || 0)).toLocaleString('es-PY') + ' ₲';
+// ponytail: sólo display; DB/inputs siguen en ISO yyyy-mm-dd.
+const fmtDate = s => /^\d{4}-\d{2}-\d{2}$/.test(s || '') ? `${s.slice(8,10)}/${s.slice(5,7)}/${s.slice(0,4)}` : (s || '');
+const dmy2iso = s => {
+  const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec((s || '').trim());
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : '';
+};
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 function toast(msg, ms = 2200) {
@@ -662,7 +668,7 @@ function renderUpcoming(items) {
     <button type="button" data-open-debt="${esc(d.id)}" class="w-full text-left flex items-center justify-between py-2 border-b border-slate-100 last:border-0 hover:bg-slate-50 transition rounded px-1 -mx-1">
       <div class="min-w-0">
         <div class="font-medium truncate">${esc(d.creditor)}</div>
-        <div class="text-xs text-slate-500">${d.nextDue}${d.nextN && cuotaCount(d.installments) > 1 ? ` · Cuota ${d.nextN}/${cuotaCount(d.installments)}` : ''}</div>
+        <div class="text-xs text-slate-500">${fmtDate(d.nextDue)}${d.nextN && cuotaCount(d.installments) > 1 ? ` · Cuota ${d.nextN}/${cuotaCount(d.installments)}` : ''}</div>
       </div>
       <div class="text-right shrink-0 ml-3">
         <div class="text-sm font-semibold">${fmt(d.remaining)}</div>
@@ -681,13 +687,13 @@ function renderDebtDetail(id) {
   let nextN = null;
   for (let i = 1; i <= N; i++) if (!paidSet.has(i)) { nextN = i; break; }
   const nextLine = nextN
-    ? `<div class="mt-1 text-xs text-slate-500">Próxima cuota impaga: <span class="font-medium text-ink">Cuota ${nextN}/${N}</span> · vence ${addMonthsIso(d.due, nextN - 1)} · ${fmt(cuotaAmt(d, nextN, N))}</div>`
+    ? `<div class="mt-1 text-xs text-slate-500">Próxima cuota impaga: <span class="font-medium text-ink">Cuota ${nextN}/${N}</span> · vence ${fmtDate(addMonthsIso(d.due, nextN - 1))} · ${fmt(cuotaAmt(d, nextN, N))}</div>`
     : '';
   body.innerHTML = `
     <div class="flex justify-between items-start gap-3">
       <div class="min-w-0">
         <div class="font-semibold truncate">${esc(d.creditor)}</div>
-        <div class="text-xs text-slate-500 mt-0.5">Vence ${d.nextDue}${d.installments ? ' · Cuota ' + (d.nextN ? d.nextN + '/' : '') + esc(d.installments) : ''}</div>
+        <div class="text-xs text-slate-500 mt-0.5">Vence ${fmtDate(d.nextDue)}${d.installments ? ' · Cuota ' + (d.nextN ? d.nextN + '/' : '') + esc(d.installments) : ''}</div>
       </div>
       <div class="text-right shrink-0">
         <div class="text-lg font-semibold">${fmt(d.remaining)}</div>
@@ -706,7 +712,7 @@ function renderDebtDetail(id) {
     ${d.remaining > 0 ? `
       <form class="mt-3 grid grid-cols-3 gap-2" data-pay-debt="${esc(d.id)}">
         <input type="number" name="amount" placeholder="Abonar (₲)" min="1" max="${d.remaining}" step="1" required inputmode="numeric" class="input col-span-2">
-        <input type="date" name="date" value="${view.today}" required class="input col-span-1">
+        <input type="text" inputmode="numeric" pattern="\d{2}/\d{2}/\d{4}" maxlength="10" placeholder="dd/mm/aaaa" name="date" value="${fmtDate(view.today)}" required class="input col-span-1">
         <button class="btn-primary col-span-3">Registrar pago</button>
       </form>` : ''}
     ${d.payments.length ? `
@@ -715,7 +721,7 @@ function renderDebtDetail(id) {
         <ul class="text-sm divide-y divide-slate-100 border-t border-slate-100">
           ${d.payments.map(p => `
             <li class="flex justify-between items-center py-1.5">
-              <span class="text-slate-600">${p.date}${p.cuota_n ? ` · Cuota ${p.cuota_n}` : ''}</span>
+              <span class="text-slate-600">${fmtDate(p.date)}${p.cuota_n ? ` · Cuota ${p.cuota_n}` : ''}</span>
               <span class="flex items-center gap-3">
                 <span class="font-medium">${fmt(p.amount)}</span>
                 <button class="text-slate-300 hover:text-primary transition" data-edit-payment="${esc(d.id)}:${p.id}" title="Editar pago" aria-label="Editar pago">✎</button>
@@ -826,7 +832,7 @@ function renderExpenses() {
   list.innerHTML = groups.map(g => `
     <div class="mt-4 first:mt-0">
       <div class="flex justify-between items-baseline mb-1.5 text-xs uppercase tracking-wide text-slate-500 font-medium">
-        <span>${g.month}</span><span>${fmt(g.sum)}</span>
+        <span>${g.month.slice(5,7)}/${g.month.slice(0,4)}</span><span>${fmt(g.sum)}</span>
       </div>
       <div class="border border-slate-200 rounded-xl overflow-hidden bg-white">
         ${g.items.map(e => {
@@ -836,7 +842,7 @@ function renderExpenses() {
               <div class="w-9 h-9 rounded-lg flex items-center justify-center text-lg shrink-0" style="background:${meta.color}22" title="${esc(e.category)}">${meta.icon}</div>
               <div class="flex-1 min-w-0">
                 <div class="font-medium truncate">${esc(e.desc)}</div>
-                <div class="text-xs text-slate-500">${e.date} · ${esc(e.category)}</div>
+                <div class="text-xs text-slate-500">${fmtDate(e.date)} · ${esc(e.category)}</div>
               </div>
               <div class="font-semibold text-sm">${fmt(e.amount)}</div>
               <button class="text-slate-300 hover:text-primary p-1 -m-1 transition" data-edit-expense="${esc(e.id)}" title="Editar" aria-label="Editar gasto">✎</button>
@@ -887,7 +893,7 @@ function renderCuotas(d) {
   const chips = Array.from({ length: N }, (_, i) => {
     const n = i + 1;
     const amt = cuotaAmt(d, n, N);
-    const due = addMonthsIso(d.due, n - 1);
+    const due = fmtDate(addMonthsIso(d.due, n - 1));
     if (paid.has(n) && tagged.has(n)) {
       return `<button type="button" data-uncheck-cuota="${esc(d.id)}:${n}" class="badge bg-emerald-100 text-emerald-700 hover:bg-red-100 hover:text-red-700 transition" title="Cuota ${n}/${N} · vence ${due} · ${fmt(amt)} · pagada (clic para desmarcar)">✓ ${n}/${N}</button>`;
     }
@@ -910,7 +916,7 @@ function renderDebts() {
       <div class="flex justify-between items-start gap-3">
         <div class="min-w-0">
           <div class="font-semibold truncate">${esc(d.creditor)}</div>
-          <div class="text-xs text-slate-500 mt-0.5">Vence ${d.nextDue}${d.installments ? ' · Cuota ' + (d.nextN ? d.nextN + '/' : '') + esc(d.installments) : ''}</div>
+          <div class="text-xs text-slate-500 mt-0.5">Vence ${fmtDate(d.nextDue)}${d.installments ? ' · Cuota ' + (d.nextN ? d.nextN + '/' : '') + esc(d.installments) : ''}</div>
         </div>
         <div class="text-right shrink-0">
           <div class="text-lg font-semibold">${fmt(d.remaining)}</div>
@@ -936,7 +942,7 @@ function renderDebts() {
             let next = 0; for (let n = 1; n <= N; n++) if (!paid.has(n)) { next = n; break; }
             if (!next) return '';
             const amt = cuotaAmt(d, next, N);
-            const due = addMonthsIso(d.due, next - 1);
+            const due = fmtDate(addMonthsIso(d.due, next - 1));
             return `
               <div class="mt-3 text-xs text-slate-600 bg-slate-50 border border-slate-100 rounded-lg px-3 py-2">
                 Próxima cuota: <span class="font-medium text-ink">${next}/${N}</span> · vence <span class="font-medium">${due}</span> · <span class="font-medium">${fmt(amt)}</span>
@@ -947,7 +953,7 @@ function renderDebts() {
         })()}
         <form class="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2" data-pay-debt="${esc(d.id)}">
           <input type="number" name="amount" placeholder="Abonar (₲)" min="1" max="${d.remaining}" step="1" required inputmode="numeric" class="input col-span-1 md:col-span-2">
-          <input type="date" name="date" value="${view.today}" required class="input col-span-1">
+          <input type="text" inputmode="numeric" pattern="\d{2}/\d{2}/\d{4}" maxlength="10" placeholder="dd/mm/aaaa" name="date" value="${fmtDate(view.today)}" required class="input col-span-1">
           <button class="btn-primary col-span-2 md:col-span-1">Registrar pago</button>
         </form>` : ''}
 
@@ -957,7 +963,7 @@ function renderDebts() {
           <ul class="mt-2 text-sm divide-y divide-slate-100 border-t border-slate-100 pt-1">
             ${d.payments.map(p => `
               <li class="flex justify-between items-center py-1.5">
-                <span class="text-slate-600">${p.date}${p.cuota_n ? ` · Cuota ${p.cuota_n}` : ''}</span>
+                <span class="text-slate-600">${fmtDate(p.date)}${p.cuota_n ? ` · Cuota ${p.cuota_n}` : ''}</span>
                 <span class="flex items-center gap-3">
                   <span class="font-medium">${fmt(p.amount)}</span>
                   <button class="text-slate-300 hover:text-primary transition" data-edit-payment="${esc(d.id)}:${p.id}" title="Editar pago" aria-label="Editar pago">✎</button>
@@ -1016,13 +1022,13 @@ $('#expense-form').addEventListener('submit', async e => {
   const ok = await mutate('/api/expenses', {
     method: 'POST',
     body: JSON.stringify({
-      date: f.get('date'),
+      date: dmy2iso(f.get('date')),
       desc: (f.get('desc') || '').trim(),
       category: f.get('category'),
       amount: +f.get('amount'),
     }),
   });
-  if (ok) { e.target.reset(); e.target.date.value = view.today; toast('Gasto agregado'); }
+  if (ok) { e.target.reset(); e.target.date.value = fmtDate(view.today); toast('Gasto agregado'); }
 });
 
 $('#debt-form').addEventListener('submit', async e => {
@@ -1033,7 +1039,7 @@ $('#debt-form').addEventListener('submit', async e => {
     body: JSON.stringify({
       creditor: (f.get('creditor') || '').trim(),
       amount: +f.get('amount'),
-      due: f.get('due'),
+      due: dmy2iso(f.get('due')),
       installments: (f.get('installments') || '').trim() || null,
       cuota_amount: f.get('cuota_amount') ? +f.get('cuota_amount') : null,
     }),
@@ -1080,7 +1086,7 @@ document.addEventListener('click', async e => {
       const { paid } = d2 ? paidCuotasView(d2, N) : { paid: new Set() };
       let nextN = 0; for (let k = 1; k <= N; k++) if (!paid.has(k)) { nextN = k; break; }
       const msg = nextN
-        ? `Cuota ${n}/${N} pagada. Próxima: ${nextN}/${N} · ${addMonthsIso(d.due, nextN - 1)} · ${fmt(cuotaAmt(d, nextN, N))}`
+        ? `Cuota ${n}/${N} pagada. Próxima: ${nextN}/${N} · ${fmtDate(addMonthsIso(d.due, nextN - 1))} · ${fmt(cuotaAmt(d, nextN, N))}`
         : `¡Deuda saldada!`;
       toast(msg);
     }
@@ -1127,7 +1133,7 @@ function openEditExpense(id) {
   const f   = $('#edit-expense-form');
   // Rellenamos el select con las categorías del server.
   f.category.innerHTML = view.categories.map(c => `<option value="${c}">${metaOf(c).icon} ${c}</option>`).join('');
-  f.date.value = e.date;
+  f.date.value = fmtDate(e.date);
   f.desc.value = e.desc;
   f.category.value = e.category;
   f.amount.value = e.amount;
@@ -1142,7 +1148,7 @@ function openEditDebt(id) {
   const f   = $('#edit-debt-form');
   f.creditor.value     = d.creditor;
   f.amount.value       = d.amount;
-  f.due.value          = d.due;
+  f.due.value          = fmtDate(d.due);
   f.installments.value = d.installments || '';
   const N = cuotaCount(d.installments);
   f.cuota_amount.value = d.cuota_amount && d.cuota_amount > 0
@@ -1188,7 +1194,7 @@ function openEditPayment(did, pid) {
   if (!p) return;
   const dlg = $('#edit-payment-dialog');
   const f   = $('#edit-payment-form');
-  f.date.value = p.date;
+  f.date.value = fmtDate(p.date);
   f.amount.value = p.amount;
   dlg.dataset.did = did;
   dlg.dataset.pid = pid;
@@ -1223,7 +1229,7 @@ $('#edit-expense-form').addEventListener('submit', e => {
   const dlg = $('#edit-expense-dialog');
   const f = new FormData(e.target);
   submitEdit('edit-expense-dialog', `/api/expenses/${encodeURIComponent(dlg.dataset.id)}` + filterQs(), {
-    date: f.get('date'),
+    date: dmy2iso(f.get('date')),
     desc: (f.get('desc') || '').trim(),
     category: f.get('category'),
     amount: +f.get('amount'),
@@ -1237,7 +1243,7 @@ $('#edit-debt-form').addEventListener('submit', e => {
   submitEdit('edit-debt-dialog', `/api/debts/${encodeURIComponent(dlg.dataset.id)}` + filterQs(), {
     creditor: (f.get('creditor') || '').trim(),
     amount: +f.get('amount'),
-    due: f.get('due'),
+    due: dmy2iso(f.get('due')),
     installments: (f.get('installments') || '').trim() || null,
     cuota_amount: f.get('cuota_amount') ? +f.get('cuota_amount') : null,
   }, 'edit-debt-error', 'Deuda actualizada');
@@ -1249,7 +1255,7 @@ $('#edit-payment-form').addEventListener('submit', e => {
   const f = new FormData(e.target);
   submitEdit('edit-payment-dialog',
     `/api/debts/${encodeURIComponent(dlg.dataset.did)}/payments/${encodeURIComponent(dlg.dataset.pid)}` + filterQs(),
-    { date: f.get('date'), amount: +f.get('amount') },
+    { date: dmy2iso(f.get('date')), amount: +f.get('amount') },
     'edit-payment-error', 'Pago actualizado');
 });
 
@@ -1261,7 +1267,7 @@ document.addEventListener('submit', async e => {
   const f = new FormData(form);
   const ok = await mutate(`/api/debts/${encodeURIComponent(did)}/payments`, {
     method: 'POST',
-    body: JSON.stringify({ amount: +f.get('amount'), date: f.get('date') }),
+    body: JSON.stringify({ amount: +f.get('amount'), date: dmy2iso(f.get('date')) }),
   });
   if (ok) {
     const debt = view.debts.find(x => x.id === did);
@@ -1271,8 +1277,17 @@ document.addEventListener('submit', async e => {
 
 $('#q').addEventListener('input',     e => { filters.q    = e.target.value; reload(); });
 $('#f-cat').addEventListener('change',  e => { filters.cat  = e.target.value; reload(); });
-$('#f-from').addEventListener('change', e => { filters.from = e.target.value; reload(); });
-$('#f-to').addEventListener('change',   e => { filters.to   = e.target.value; reload(); });
+$('#f-from').addEventListener('change', e => { filters.from = dmy2iso(e.target.value); reload(); });
+$('#f-to').addEventListener('change',   e => { filters.to   = dmy2iso(e.target.value); reload(); });
+
+// ponytail: autoinserta las "/" mientras se escribe dd/mm/yyyy.
+document.addEventListener('input', e => {
+  if (e.target.pattern !== '\\d{2}/\\d{2}/\\d{4}') return;
+  const digits = e.target.value.replace(/\D/g, '').slice(0, 8);
+  e.target.value = digits.length > 4 ? `${digits.slice(0,2)}/${digits.slice(2,4)}/${digits.slice(4)}`
+                 : digits.length > 2 ? `${digits.slice(0,2)}/${digits.slice(2)}`
+                 : digits;
+});
 
 // ponytail: PUT /api/budgets pisa toda la fila; siempre mandar los 3 campos.
 function collectCats() {
