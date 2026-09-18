@@ -173,11 +173,12 @@
   <section id="debts" class="tab-content hidden space-y-4">
     <div class="card">
       <h2 class="font-semibold mb-3">Nueva deuda</h2>
-      <form id="debt-form" class="grid grid-cols-2 md:grid-cols-6 gap-2">
+      <form id="debt-form" class="grid grid-cols-2 md:grid-cols-7 gap-2">
         <input type="text" name="creditor" placeholder="Acreedor" required class="input col-span-2 md:col-span-2" maxlength="60">
         <input type="number" name="amount" placeholder="Monto total (₲)" min="1" step="1" required inputmode="numeric" class="input col-span-1 md:col-span-1">
+        <input type="number" name="cuota_amount" placeholder="Monto por cuota (₲)" min="1" step="1" inputmode="numeric" class="input col-span-1 md:col-span-1" title="Se autocompleta con total ÷ N cuotas">
         <input type="date" name="due" required class="input col-span-1 md:col-span-1" aria-label="Vencimiento">
-        <input type="text" name="installments" placeholder="Cuota (ej: 3/10)" class="input col-span-1 md:col-span-1" maxlength="12">
+        <input type="text" name="installments" placeholder="N cuotas (ej: 10)" class="input col-span-1 md:col-span-1" maxlength="12">
         <button class="btn-primary col-span-2 md:col-span-1">Agregar</button>
       </form>
     </div>
@@ -282,8 +283,9 @@
     <div class="grid grid-cols-2 gap-2">
       <input type="text"   name="creditor"     required maxlength="60" class="input col-span-2" placeholder="Acreedor">
       <input type="number" name="amount"       required min="1" step="1" inputmode="numeric" class="input col-span-1" placeholder="Monto total (₲)">
+      <input type="number" name="cuota_amount" min="1" step="1" inputmode="numeric" class="input col-span-1" placeholder="Monto por cuota (₲)" title="Se autocompleta con total ÷ N cuotas">
       <input type="date"   name="due"          required class="input col-span-1" aria-label="Vencimiento">
-      <input type="text"   name="installments" maxlength="12" class="input col-span-2" placeholder="Cuota (ej: 3/10)">
+      <input type="text"   name="installments" maxlength="12" class="input col-span-1" placeholder="N cuotas (ej: 10)">
     </div>
     <div id="edit-debt-error" class="text-xs text-red-600 mt-2 hidden"></div>
     <div class="flex justify-end gap-2 mt-4">
@@ -987,11 +989,37 @@ function openEditDebt(id) {
   f.amount.value       = d.amount;
   f.due.value          = d.due;
   f.installments.value = d.installments || '';
+  const N = cuotaCount(d.installments);
+  f.cuota_amount.value = N > 1 ? Math.round(d.amount / N) : d.amount;
   dlg.dataset.id  = id;
   dlg.dataset.paid = d.paid; // hint para mensaje de error local
   $('#edit-debt-error').classList.add('hidden');
   dlg.showModal();
 }
+
+// ponytail: sync bidireccional total ↔ cuota vía N; backend sigue guardando sólo amount.
+function wireDebtAmountSync(form) {
+  const amt = form.querySelector('[name=amount]');
+  const cuota = form.querySelector('[name=cuota_amount]');
+  const inst = form.querySelector('[name=installments]');
+  if (!amt || !cuota || !inst) return;
+  const N = () => cuotaCount(inst.value);
+  amt.addEventListener('input', () => {
+    const n = N();
+    if (n >= 1 && amt.value) cuota.value = Math.round(+amt.value / n);
+  });
+  cuota.addEventListener('input', () => {
+    const n = N();
+    if (n >= 1 && cuota.value) amt.value = Math.round(+cuota.value * n);
+  });
+  inst.addEventListener('input', () => {
+    const n = N();
+    if (amt.value) cuota.value = Math.round(+amt.value / n);
+    else if (cuota.value) amt.value = Math.round(+cuota.value * n);
+  });
+}
+wireDebtAmountSync($('#debt-form'));
+wireDebtAmountSync($('#edit-debt-form'));
 function openEditPayment(did, pid) {
   const d = findDebt(did);
   const p = d && d.payments.find(x => String(x.id) === String(pid));
