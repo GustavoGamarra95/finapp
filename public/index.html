@@ -748,7 +748,10 @@ function renderExpenses() {
 
 // ponytail: espeja parseInstallments del backend (primer int, default 1).
 const cuotaCount = s => { const n = parseInt(String(s || '').trim(), 10); return Number.isFinite(n) && n > 0 ? n : 1; };
-const cuotaAmt = (d, n, N) => { const per = Math.round(d.amount / N); return n < N ? per : d.amount - per * (N - 1); };
+const cuotaAmt = (d, n, N) => {
+  const per = d.cuota_amount && d.cuota_amount > 0 ? d.cuota_amount : Math.round(d.amount / N);
+  return n < N ? per : Math.max(0, d.amount - per * (N - 1));
+};
 
 // Hybrid: cuota paga = tag explícito OR cubierta por abonos sin taggear.
 function paidCuotasView(d, N) {
@@ -902,6 +905,7 @@ $('#debt-form').addEventListener('submit', async e => {
       amount: +f.get('amount'),
       due: f.get('due'),
       installments: (f.get('installments') || '').trim() || null,
+      cuota_amount: f.get('cuota_amount') ? +f.get('cuota_amount') : null,
     }),
   });
   if (ok) { e.target.reset(); toast('Deuda agregada'); }
@@ -992,7 +996,9 @@ function openEditDebt(id) {
   f.due.value          = d.due;
   f.installments.value = d.installments || '';
   const N = cuotaCount(d.installments);
-  f.cuota_amount.value = N > 1 ? Math.round(d.amount / N) : d.amount;
+  f.cuota_amount.value = d.cuota_amount && d.cuota_amount > 0
+    ? d.cuota_amount
+    : (N > 1 ? Math.round(d.amount / N) : d.amount);
   dlg.dataset.id  = id;
   dlg.dataset.paid = d.paid; // hint para mensaje de error local
   $('#edit-debt-error').classList.add('hidden');
@@ -1084,6 +1090,7 @@ $('#edit-debt-form').addEventListener('submit', e => {
     amount: +f.get('amount'),
     due: f.get('due'),
     installments: (f.get('installments') || '').trim() || null,
+    cuota_amount: f.get('cuota_amount') ? +f.get('cuota_amount') : null,
   }, 'edit-debt-error', 'Deuda actualizada');
 });
 
