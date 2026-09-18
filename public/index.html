@@ -180,6 +180,7 @@
         <input type="date" name="due" required class="input col-span-1 md:col-span-1" aria-label="Vencimiento">
         <input type="text" name="installments" placeholder="N cuotas (ej: 10)" class="input col-span-1 md:col-span-1" maxlength="12">
         <button class="btn-primary col-span-2 md:col-span-1">Agregar</button>
+        <p data-cuota-warn class="text-xs text-amber-600 col-span-2 md:col-span-7 hidden"></p>
       </form>
     </div>
     <div id="debt-list" class="space-y-3"></div>
@@ -287,6 +288,7 @@
       <input type="date"   name="due"          required class="input col-span-1" aria-label="Vencimiento">
       <input type="text"   name="installments" maxlength="12" class="input col-span-1" placeholder="N cuotas (ej: 10)">
     </div>
+    <p data-cuota-warn class="text-xs text-amber-600 mt-2 hidden"></p>
     <div id="edit-debt-error" class="text-xs text-red-600 mt-2 hidden"></div>
     <div class="flex justify-end gap-2 mt-4">
       <button type="button" data-cancel class="btn-ghost">Cancelar</button>
@@ -994,6 +996,7 @@ function openEditDebt(id) {
   dlg.dataset.id  = id;
   dlg.dataset.paid = d.paid; // hint para mensaje de error local
   $('#edit-debt-error').classList.add('hidden');
+  f._refreshCuotaWarn?.();
   dlg.showModal();
 }
 
@@ -1002,21 +1005,38 @@ function wireDebtAmountSync(form) {
   const amt = form.querySelector('[name=amount]');
   const cuota = form.querySelector('[name=cuota_amount]');
   const inst = form.querySelector('[name=installments]');
+  const warn = form.querySelector('[data-cuota-warn]');
   if (!amt || !cuota || !inst) return;
   const N = () => cuotaCount(inst.value);
+  const refreshWarn = () => {
+    if (!warn) return;
+    const n = N(), a = +amt.value, c = +cuota.value;
+    if (n > 1 && a > 0 && c > 0 && c * n !== a) {
+      const per = c, last = a - per * (n - 1);
+      warn.textContent = `Redondeo: ${n - 1} × ${fmt(per)} + ${fmt(last)} = ${fmt(a)} (última cuota compensa).`;
+      warn.classList.remove('hidden');
+    } else {
+      warn.classList.add('hidden');
+    }
+  };
   amt.addEventListener('input', () => {
     const n = N();
     if (n >= 1 && amt.value) cuota.value = Math.round(+amt.value / n);
+    refreshWarn();
   });
   cuota.addEventListener('input', () => {
     const n = N();
     if (n >= 1 && cuota.value) amt.value = Math.round(+cuota.value * n);
+    refreshWarn();
   });
   inst.addEventListener('input', () => {
     const n = N();
     if (amt.value) cuota.value = Math.round(+amt.value / n);
     else if (cuota.value) amt.value = Math.round(+cuota.value * n);
+    refreshWarn();
   });
+  form.addEventListener('reset', () => setTimeout(refreshWarn, 0));
+  form._refreshCuotaWarn = refreshWarn;
 }
 wireDebtAmountSync($('#debt-form'));
 wireDebtAmountSync($('#edit-debt-form'));
